@@ -1,0 +1,712 @@
+<title>AI Ethics Assistant — Presentation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --eu-blue: #003399;
+    --eu-blue-deep: #001F5C;
+    --ink: #0B1730;
+    --gold: #FFCC00;
+    --gold-ink: #7A5F00;
+    --paper: #F6F8FC;
+    --paper-raised: #FFFFFF;
+    --line: #C9D6EF;
+    --muted: #4C5A78;
+    --green: #047857;
+    --green-bg: #E7F5EF;
+    --amber: #92400E;
+    --amber-bg: #FDF1DE;
+    --shadow: 0 20px 45px -25px rgba(0, 31, 92, 0.35);
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+  }
+
+  :root[data-theme="dark"] {
+    --ink: #E8ECF8;
+    --paper: #0A1226;
+    --paper-raised: #101B38;
+    --line: #25366;
+    --muted: #93A2C7;
+    --gold-ink: #FFD866;
+    --green: #34D399;
+    --green-bg: #0E2E24;
+    --amber: #FBBF24;
+    --amber-bg: #2E2408;
+    --shadow: 0 20px 45px -25px rgba(0, 0, 0, 0.6);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #E8ECF8;
+      --paper: #0A1226;
+      --paper-raised: #101B38;
+      --line: #25366;
+      --muted: #93A2C7;
+      --gold-ink: #FFD866;
+      --green: #34D399;
+      --green-bg: #0E2E24;
+      --amber: #FBBF24;
+      --amber-bg: #2E2408;
+      --shadow: 0 20px 45px -25px rgba(0, 0, 0, 0.6);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    overflow-x: hidden;
+    height: 100%;
+  }
+
+  .deck {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    min-height: 560px;
+    overflow: hidden;
+  }
+
+  .rail {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 4px;
+    background: var(--line);
+    z-index: 40;
+  }
+  .rail-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--eu-blue), var(--gold));
+    transition: width 0.4s ease;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: clamp(1.5rem, 5vw, 4.5rem) clamp(1.5rem, 8vw, 7rem);
+    opacity: 0;
+    transform: translateX(24px);
+    transition: opacity 0.45s ease, transform 0.45s ease;
+    pointer-events: none;
+    overflow-y: auto;
+  }
+  .slide.active {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+  .slide.prev { transform: translateX(-24px); }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--eu-blue);
+    margin-bottom: 1.1rem;
+  }
+  :root[data-theme="dark"] .eyebrow, @media (prefers-color-scheme: dark) { }
+  .eyebrow::before {
+    content: "";
+    width: 22px; height: 2px;
+    background: var(--gold);
+    display: inline-block;
+  }
+
+  h1.headline {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: clamp(2rem, 4.4vw, 3.6rem);
+    line-height: 1.08;
+    margin: 0 0 0.6rem 0;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .headline em {
+    font-style: normal;
+    color: var(--eu-blue);
+  }
+  :root[data-theme="dark"] .headline em { color: #7FA6FF; }
+
+  .subhead {
+    font-size: clamp(1rem, 1.4vw, 1.2rem);
+    color: var(--muted);
+    max-width: 46rem;
+    line-height: 1.55;
+    margin: 0 0 1.6rem 0;
+  }
+
+  .body-copy {
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--ink);
+    max-width: 42rem;
+  }
+  .body-copy + .body-copy { margin-top: 0.9rem; }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: clamp(1.5rem, 3vw, 3rem);
+    align-items: start;
+    width: 100%;
+    max-width: 78rem;
+  }
+  @media (max-width: 860px) {
+    .grid-2 { grid-template-columns: 1fr; }
+  }
+
+  table.doc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  table.doc-table th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 0.7rem 0.6rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  table.doc-table td {
+    padding: 0.65rem 0.7rem 0.65rem 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.doc-table tr:last-child td { border-bottom: none; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--eu-blue); }
+  :root[data-theme="dark"] td.num { color: #7FA6FF; }
+
+  .stat-block {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1.5rem 1.7rem;
+    box-shadow: var(--shadow);
+  }
+  .stat-num {
+    font-family: var(--serif);
+    font-size: 2.6rem;
+    color: var(--eu-blue);
+    line-height: 1;
+  }
+  :root[data-theme="dark"] .stat-num { color: #7FA6FF; }
+  .stat-label {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-top: 0.35rem;
+  }
+
+  /* Pipeline (Article III) */
+  .pipeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    width: 100%;
+    max-width: 74rem;
+    counter-reset: stage;
+  }
+  .stage {
+    flex: 1 1 150px;
+    position: relative;
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    padding: 1.2rem 1.1rem;
+    counter-increment: stage;
+  }
+  .stage:not(:last-child) { border-right: none; }
+  .stage::before {
+    content: counter(stage, decimal-leading-zero);
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--gold-ink);
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.05em;
+  }
+  .stage h3 {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-size: 1.05rem;
+    margin: 0 0 0.35rem 0;
+    color: var(--ink);
+  }
+  .stage p {
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin: 0;
+    line-height: 1.45;
+  }
+  .stage.accent {
+    background: var(--eu-blue);
+    border-color: var(--eu-blue);
+  }
+  .stage.accent h3, .stage.accent p, .stage.accent::before { color: #DCE6FF; }
+  .stage.accent::before { color: var(--gold); }
+
+  /* Amendment callout (Article IV) */
+  .amendment {
+    border-left: 3px solid var(--gold);
+    background: var(--paper-raised);
+    padding: 1.1rem 1.4rem;
+    margin-top: 1.3rem;
+    max-width: 44rem;
+    box-shadow: var(--shadow);
+  }
+  .amendment .tag {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gold-ink);
+    display: block;
+    margin-bottom: 0.5rem;
+  }
+  .amendment p { font-size: 0.92rem; line-height: 1.6; margin: 0.4rem 0 0 0; color: var(--ink); }
+
+  /* Safeguards table (Article V) */
+  .safeguard {
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    gap: 0.9rem;
+    padding: 0.9rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .safeguard:last-of-type { border-bottom: none; }
+  .safeguard .mark {
+    font-family: var(--serif);
+    font-size: 1.3rem;
+    color: var(--gold-ink);
+  }
+  .safeguard h4 { margin: 0 0 0.2rem 0; font-size: 0.98rem; font-family: var(--serif); font-weight: 500; }
+  .safeguard p { margin: 0; font-size: 0.85rem; color: var(--muted); line-height: 1.5; }
+
+  /* Calibration dot plot */
+  .dotplot {
+    width: 100%;
+    max-width: 34rem;
+    margin-top: 0.4rem;
+  }
+  .dotplot-axis {
+    position: relative;
+    height: 3px;
+    background: var(--line);
+    border-radius: 2px;
+    margin: 3.8rem 0 0.6rem 0;
+  }
+  .dot {
+    position: absolute;
+    top: 50%;
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    border: 2px solid var(--paper);
+  }
+  .dot.in-scope { background: var(--green); }
+  .dot.out-scope { background: var(--muted); }
+  .dot.outlier { background: var(--amber); width: 15px; height: 15px; }
+  .dot-label {
+    position: absolute;
+    top: -1.9rem;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .dot-label.high { top: -3.4rem; }
+  .dot-label strong { color: var(--ink); }
+  .axis-caps {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--muted);
+  }
+  .legend {
+    display: flex;
+    gap: 1.4rem;
+    margin-top: 1.4rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+  /* Badge pills reused from app */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    background: var(--green-bg);
+    color: var(--green);
+    margin: 0.2rem 0.4rem 0.2rem 0;
+  }
+  .pill.warn { background: var(--amber-bg); color: var(--amber); }
+
+  .closing {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: clamp(1.1rem, 2vw, 1.5rem);
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 42rem;
+    border-left: 3px solid var(--eu-blue);
+    padding-left: 1.3rem;
+    margin-top: 1.5rem;
+  }
+
+  .stars {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.4rem;
+  }
+  .stars i {
+    width: 6px; height: 6px;
+    background: var(--gold);
+    border-radius: 50%;
+    display: block;
+  }
+
+  /* Nav */
+  .nav {
+    position: fixed;
+    bottom: clamp(1rem, 3vh, 2rem);
+    left: 0; right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.4rem;
+    z-index: 40;
+  }
+  .nav button {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--paper-raised);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.5rem 1.1rem;
+    cursor: pointer;
+    box-shadow: var(--shadow);
+  }
+  .nav button:hover { border-color: var(--eu-blue); }
+  .nav button:focus-visible { outline: 2px solid var(--eu-blue); outline-offset: 2px; }
+  .nav button:disabled { opacity: 0.35; cursor: default; }
+  .dots { display: flex; gap: 0.45rem; }
+  .dots button {
+    width: 7px; height: 7px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--line);
+    border: none;
+    box-shadow: none;
+  }
+  .dots button.on { background: var(--eu-blue); }
+  :root[data-theme="dark"] .dots button.on { background: #7FA6FF; }
+
+  .slide-index {
+    position: fixed;
+    top: 1.1rem;
+    right: 1.3rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    z-index: 40;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .slide { transition: none; }
+  }
+</style>
+
+<div class="rail"><div class="rail-fill" id="railFill"></div></div>
+<div class="slide-index" id="slideIndex">I / VI</div>
+
+<div class="deck" id="deck">
+
+  <!-- ARTICLE I — Preamble -->
+  <section class="slide active" data-index="0">
+    <div class="stars" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+    </div>
+    <span class="eyebrow">Article I — Preamble</span>
+    <h1 class="headline">⚖️ AI Ethics Assistant</h1>
+    <p class="subhead">
+      A retrieval-augmented conversational agent for European AI ethics and
+      regulation — grounded in four authoritative sources, supervised before
+      every answer, and honest about what it doesn't know.
+    </p>
+    <p class="body-copy" style="color: var(--muted); font-size: 0.85rem;">
+      Nazmul Farooquee · Built with LangGraph, Groq, ChromaDB &amp; Streamlit
+    </p>
+  </section>
+
+  <!-- ARTICLE II — Subject Matter -->
+  <section class="slide" data-index="1">
+    <span class="eyebrow">Article II — Subject Matter</span>
+    <h1 class="headline">250 pages nobody<br><em>has time to read.</em></h1>
+    <div class="grid-2">
+      <div>
+        <p class="body-copy">
+          The EU AI Act and its supporting frameworks are dense, official,
+          and largely inaccessible to the developers, students, and
+          policymakers who most need to understand them. This assistant
+          answers questions from four sources — never guessing, always
+          citing.
+        </p>
+      </div>
+      <div>
+        <table class="doc-table">
+          <thead>
+            <tr><th>Source</th><th>Type</th><th>Pages</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>EU AI Act</td><td>Legal text</td><td class="num">50</td></tr>
+            <tr><td>Bias &amp; Fairness Survey (Mehrabi et al.)</td><td>Academic</td><td class="num">34</td></tr>
+            <tr><td>EP Study: Ethics of AI</td><td>Policy study</td><td class="num">128</td></tr>
+            <tr><td>Ethics Guidelines for Trustworthy AI</td><td>EU framework</td><td class="num">41</td></tr>
+            <tr><td><strong>Total</strong></td><td></td><td class="num"><strong>253</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARTICLE III — Mechanism -->
+  <section class="slide" data-index="2">
+    <span class="eyebrow">Article III — Mechanism</span>
+    <h1 class="headline">Like the Act itself,<br><em>built from discrete steps.</em></h1>
+    <p class="subhead">retrieve → generate → verify → revise → finalize</p>
+    <div class="pipeline">
+      <div class="stage">
+        <h3>Retrieve</h3>
+        <p>MMR search across 758 chunks — diverse context, not near-duplicates.</p>
+      </div>
+      <div class="stage">
+        <h3>Generate</h3>
+        <p>Groq drafts an answer strictly from retrieved context.</p>
+      </div>
+      <div class="stage accent">
+        <h3>Verify</h3>
+        <p>An independent second call checks citation, faithfulness &amp; relevance.</p>
+      </div>
+      <div class="stage">
+        <h3>Revise</h3>
+        <p>Only if verification fails — regenerates once, told exactly why.</p>
+      </div>
+      <div class="stage">
+        <h3>Remember</h3>
+        <p>LangGraph MemorySaver keeps context across a conversation thread.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARTICLE IV — Provisions & Amendments -->
+  <section class="slide" data-index="3">
+    <span class="eyebrow">Article IV — Provisions</span>
+    <h1 class="headline">Every choice made<br><em>for zero cost, zero limits.</em></h1>
+    <div class="grid-2">
+      <div>
+        <table class="doc-table">
+          <thead><tr><th>Layer</th><th>Choice</th></tr></thead>
+          <tbody>
+            <tr><td>LLM</td><td>Groq — llama-3.1-8b-instant</td></tr>
+            <tr><td>Embeddings</td><td>Sentence Transformers (local)</td></tr>
+            <tr><td>Vector store</td><td>ChromaDB</td></tr>
+            <tr><td>Agent framework</td><td>LangGraph</td></tr>
+            <tr><td>Interface</td><td>Streamlit</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="amendment">
+        <span class="tag">Amendment — on the record</span>
+        <p>
+          The brief specified Google Gemini. Gemini's free tier caps
+          embeddings at 1,000/day and 100/minute — for 758 chunks, that
+          quota blocked development repeatedly.
+        </p>
+        <p>
+          We migrated to Groq + local embeddings — both genuinely free, no
+          rate limits. The architecture, agent design, and prompt are
+          unchanged; only the provider is.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARTICLE V — Safeguards -->
+  <section class="slide" data-index="4">
+    <span class="eyebrow">Article V — Safeguards</span>
+    <h1 class="headline">A wrong answer,<br><em>confidently given, is worse.</em></h1>
+    <div class="grid-2">
+      <div>
+        <div class="safeguard">
+          <span class="mark">I.</span>
+          <div><h4>MMR Retrieval</h4><p>Diverse context instead of four copies of the same passage.</p></div>
+        </div>
+        <div class="safeguard">
+          <span class="mark">II.</span>
+          <div><h4>Citation Cross-Check</h4><p>Deterministic — flags a cited source that was never retrieved. Zero LLM cost.</p></div>
+        </div>
+        <div class="safeguard">
+          <span class="mark">III.</span>
+          <div><h4>Faithfulness + Relevance</h4><p>An independent Groq call checks both — an evasive answer can't hide behind being technically grounded.</p></div>
+        </div>
+      </div>
+      <div>
+        <p class="body-copy" style="font-size: 0.88rem;">
+          <strong>Repealed provision:</strong> a pre-generation confidence
+          gate looked clean in calibration — until a typo broke it.
+        </p>
+        <div class="dotplot">
+          <div class="dotplot-axis">
+            <div class="dot in-scope" style="left: 4%;"><span class="dot-label">0.43</span></div>
+            <div class="dot in-scope" style="left: 15%;"><span class="dot-label high">0.57</span></div>
+            <div class="dot in-scope" style="left: 26%;"><span class="dot-label">0.75</span></div>
+            <div class="dot out-scope" style="left: 47%;"><span class="dot-label high">1.02</span></div>
+            <div class="dot out-scope" style="left: 61%;"><span class="dot-label">1.24</span></div>
+            <div class="dot out-scope" style="left: 74%;"><span class="dot-label high">1.42</span></div>
+            <div class="dot outlier" style="left: 88%;"><span class="dot-label"><strong>1.54 (typo)</strong></span></div>
+            <div class="dot out-scope" style="left: 96%;"><span class="dot-label high">1.78</span></div>
+          </div>
+          <div class="axis-caps"><span>more confident</span><span>less confident</span></div>
+        </div>
+        <div class="legend">
+          <span><i style="background: var(--green);"></i>in-scope</span>
+          <span><i style="background: var(--muted);"></i>out-of-scope</span>
+          <span><i style="background: var(--amber);"></i>typo outlier</span>
+        </div>
+        <p class="body-copy" style="font-size: 0.85rem; margin-top: 1rem;">
+          The typo scored worse than genuine off-topic questions. No
+          threshold could separate them — so the gate was removed, and the
+          decision documented, not hidden.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARTICLE VI — Findings & Demonstration -->
+  <section class="slide" data-index="5">
+    <span class="eyebrow">Article VI — Findings</span>
+    <h1 class="headline">Reliability, <em>measured</em> —<br>not claimed.</h1>
+    <div class="grid-2">
+      <div style="display:flex; gap: 1rem; flex-wrap: wrap;">
+        <div class="stat-block" style="flex: 1 1 120px;">
+          <div class="stat-num">37</div>
+          <div class="stat-label">Logged design decisions</div>
+        </div>
+        <div class="stat-block" style="flex: 1 1 120px;">
+          <div class="stat-num">758</div>
+          <div class="stat-label">Indexed chunks, zero duplicates</div>
+        </div>
+        <div class="stat-block" style="flex: 1 1 120px;">
+          <div class="stat-num">$0</div>
+          <div class="stat-label">Running cost</div>
+        </div>
+        <div style="flex: 1 1 100%; margin-top: 0.4rem;">
+          <span class="pill">✅ Verified — grounded in context</span>
+          <span class="pill warn">🔁 Revised — after failing a check</span>
+        </div>
+      </div>
+      <div>
+        <p class="body-copy" style="font-size: 0.92rem;">
+          Every retrieval score and verification verdict is logged. The
+          live app's sidebar shows a real-time verified / revised tally for
+          the session — a number you can watch change, not a promise.
+        </p>
+        <div class="closing">
+          "The goal wasn't just a working chatbot — it was one that's
+          honest about what it doesn't know, and that I can prove is
+          honest, live, in front of you."
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="nav">
+  <button id="prevBtn" aria-label="Previous slide">← Prev</button>
+  <div class="dots" id="dots"></div>
+  <button id="nextBtn" aria-label="Next slide">Next →</button>
+</div>
+
+<script>
+  (function () {
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const total = slides.length;
+    const romans = ['I', 'II', 'III', 'IV', 'V', 'VI'];
+    let current = 0;
+
+    const dotsWrap = document.getElementById('dots');
+    slides.forEach((_, i) => {
+      const b = document.createElement('button');
+      b.setAttribute('aria-label', 'Go to slide ' + (i + 1));
+      if (i === 0) b.classList.add('on');
+      b.addEventListener('click', () => go(i));
+      dotsWrap.appendChild(b);
+    });
+
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const railFill = document.getElementById('railFill');
+    const slideIndex = document.getElementById('slideIndex');
+
+    function render() {
+      slides.forEach((s, i) => {
+        s.classList.toggle('active', i === current);
+        s.classList.toggle('prev', i < current);
+      });
+      Array.from(dotsWrap.children).forEach((d, i) => d.classList.toggle('on', i === current));
+      prevBtn.disabled = current === 0;
+      nextBtn.disabled = current === total - 1;
+      railFill.style.width = ((current + 1) / total * 100) + '%';
+      slideIndex.textContent = romans[current] + ' / ' + romans[total - 1];
+    }
+
+    function go(i) {
+      current = Math.max(0, Math.min(total - 1, i));
+      render();
+    }
+
+    prevBtn.addEventListener('click', () => go(current - 1));
+    nextBtn.addEventListener('click', () => go(current + 1));
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ') { go(current + 1); }
+      if (e.key === 'ArrowLeft') { go(current - 1); }
+    });
+
+    let touchStartX = null;
+    window.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; }, { passive: true });
+    window.addEventListener('touchend', (e) => {
+      if (touchStartX === null) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      if (Math.abs(dx) > 50) go(current + (dx < 0 ? 1 : -1));
+      touchStartX = null;
+    }, { passive: true });
+
+    render();
+  })();
+</script>
