@@ -30,7 +30,7 @@ PDFs → cleaning → chunking (1400 chars / 150 overlap) → Gemini embeddings
 ## Installation
 
 1. Clone the repo and `cd` into it
-2. `python -m venv .venv && source .venv/bin/activate` (Windows: `.venv\Scripts\activate`)
+2. `python -m venv ai_ethics && ai_ethics\Scripts\activate` (Windows) or `python -m venv ai_ethics && source ai_ethics/bin/activate` (Mac/Linux)
 3. `pip install -r requirements.txt`
 4. Create a `.env` file in the project root with `GOOGLE_API_KEY=your_key` (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey))
 5. Open `notebooks/ai_ethics_assistant.ipynb` and run top to bottom — the 4 PDFs are already in `data/`
