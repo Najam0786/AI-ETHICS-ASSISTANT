@@ -17,18 +17,21 @@ The AI Ethics Assistant is a RAG-based (Retrieval-Augmented Generation) conversa
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      LangGraph Agent                              │
-│  ┌──────────────┐         ┌──────────────┐                     │
-│  │   Retrieve   │────────▶│   Generate   │                     │
-│  │    Node      │         │    Node      │                     │
-│  └──────────────┘         └──────────────┘                     │
-│         │                         │                               │
-│         ▼                         ▼                               │
-│  ┌──────────────┐         ┌──────────────┐                     │
-│  │   ChromaDB   │         │   Groq LLM   │                     │
-│  │ Vector Store │         │  (llama-3.1) │                     │
-│  └──────────────┘         └──────────────┘                     │
+│                                                                    │
+│  ┌──────────┐   ┌──────────┐   ┌─────────┐   ┌─────────┐        │
+│  │ Retrieve │──▶│ Generate │──▶│ Verify  │──▶│Finalize │──▶ END  │
+│  └────┬─────┘   └──────────┘   └────┬────┘   └────▲────┘        │
+│       │                             │ invalid       │             │
+│       ▼                             ▼               │             │
+│  ┌──────────┐                  ┌─────────┐          │             │
+│  │ ChromaDB │                  │ Revise  │──────────┘             │
+│  │  Vector  │                  └─────────┘                        │
+│  │  Store   │                                                     │
+│  └──────────┘        Generate/Verify/Revise all call Groq LLM     │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+`Verify` is a supervisor node: a second, independent LLM call that checks the draft answer against the same retrieved context and returns `VALID` or `INVALID: <reason>`. Only on `INVALID` does the graph route to `Revise`, which regenerates the answer with the specific gap called out — otherwise it goes straight to `Finalize`. This generator+critic pattern catches fabricated citations and unsupported claims that a single-pass RAG agent would let through, which matters for a compliance/ethics domain where a confident, ungrounded answer is worse than "I don't know."
 
 ## Component Architecture
 

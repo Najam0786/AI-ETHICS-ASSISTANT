@@ -87,6 +87,7 @@ This document records key architectural and implementation decisions for the AI 
 | 13 | Source attribution in responses | No source attribution | Enables verification; shows retrieval is working; builds trust; educational value |
 | 14 | Conversation memory with MemorySaver | Stateless responses | Maintains context across questions; enables follow-up queries; better user experience |
 | 15 | Legal disclaimer in system prompt | No disclaimer | Responsible AI practice; especially important for legal domain; protects users from relying on AI for legal decisions |
+| 28 | Supervisor/verification node (generate → verify → revise) | Single-pass generation only; self-critique in one prompt; full multi-agent debate | Testing showed the single-pass agent occasionally fabricated a plausible citation (e.g. an EU AI Act article number) not present in the retrieved context, especially on vague multi-turn follow-ups. A second, independent LLM call re-checks the draft against the same context and forces one regeneration if it finds an unsupported claim. Cheaper and simpler than a full multi-agent debate — one extra Groq call in the common case, two if a correction is needed — while still being a real generator+critic pattern rather than the same model grading its own homework in one shot. Especially important given this is a compliance/ethics assistant, where a confident but ungrounded answer is worse than "I don't know." |
 
 ## Deployment Strategy
 

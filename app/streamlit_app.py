@@ -7,11 +7,11 @@ Uses Groq for LLM and local Sentence Transformers for embeddings.
 
 import os
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 import streamlit as st
 from dotenv import load_dotenv
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langchain_chroma import Chroma
 from langgraph.checkpoint.memory import MemorySaver
@@ -49,10 +49,35 @@ CONTEXT FROM KNOWLEDGE BASE:
 {context}
 """
 
+VERIFY_PROMPT = """You are a strict compliance reviewer for an AI ethics assistant. Your only \
+job is to check whether a DRAFT ANSWER is fully grounded in the given CONTEXT — no invented \
+facts, article numbers, or legal claims that aren't directly supported.
+
+CONTEXT:
+{context}
+
+DRAFT ANSWER:
+{draft}
+
+Reply with exactly "VALID" if every claim in the draft is directly supported by the context \
+(or the draft correctly states it doesn't have enough information). Otherwise reply with \
+"INVALID: " followed by a one-sentence explanation of the unsupported claim.
+"""
+
+REVISE_PROMPT = """Your previous draft failed a groundedness check: {reason}
+
+Rewrite the answer to the question below using ONLY the context provided, correcting this \
+issue. If the context doesn't actually support an answer, say so explicitly.
+
+QUESTION: {question}
+"""
+
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     context: str
+    draft: str
+    verification: str
 
 
 class LocalEmbeddings:
@@ -102,18 +127,47 @@ def load_agent():
         return {"context": context}
 
     def generate(state: AgentState) -> dict:
-        """Generate response using LLM with retrieved context."""
+        """Generate a draft response using the LLM with retrieved context."""
         system = SystemMessage(content=SYSTEM_PROMPT.format(context=state["context"]))
         response = llm.invoke([system] + state["messages"])
-        return {"messages": [response]}
+        return {"draft": response.content}
 
-    # Build agent graph
+    def verify(state: AgentState) -> dict:
+        """Supervisor check: is the draft fully grounded in the retrieved context?"""
+        check = VERIFY_PROMPT.format(context=state["context"], draft=state["draft"])
+        result = llm.invoke([HumanMessage(content=check)])
+        return {"verification": result.content.strip()}
+
+    def route_after_verify(state: AgentState) -> Literal["finalize", "revise"]:
+        return "finalize" if state["verification"].upper().startswith("VALID") else "revise"
+
+    def revise(state: AgentState) -> dict:
+        """Regenerate the answer once, addressing the specific verification failure."""
+        question = state["messages"][-1].content
+        system = SystemMessage(content=SYSTEM_PROMPT.format(context=state["context"]))
+        correction = HumanMessage(
+            content=REVISE_PROMPT.format(reason=state["verification"], question=question)
+        )
+        response = llm.invoke([system] + state["messages"] + [correction])
+        return {"draft": response.content}
+
+    def finalize(state: AgentState) -> dict:
+        """Commit the (possibly revised) draft as the agent's final answer."""
+        return {"messages": [AIMessage(content=state["draft"])]}
+
+    # Build agent graph: retrieve -> generate -> verify -> [finalize | revise -> finalize]
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("retrieve", retrieve)
     graph_builder.add_node("generate", generate)
+    graph_builder.add_node("verify", verify)
+    graph_builder.add_node("revise", revise)
+    graph_builder.add_node("finalize", finalize)
     graph_builder.add_edge(START, "retrieve")
     graph_builder.add_edge("retrieve", "generate")
-    graph_builder.add_edge("generate", END)
+    graph_builder.add_edge("generate", "verify")
+    graph_builder.add_conditional_edges("verify", route_after_verify)
+    graph_builder.add_edge("revise", "finalize")
+    graph_builder.add_edge("finalize", END)
 
     return graph_builder.compile(checkpointer=MemorySaver())
 
@@ -159,9 +213,15 @@ def main():
             config={"configurable": {"thread_id": "streamlit-session"}},
         )
         answer = result["messages"][-1].content
-        
+        verified = result.get("verification", "").upper().startswith("VALID")
+
         # Display response and update history
-        st.chat_message("assistant").write(answer)
+        with st.chat_message("assistant"):
+            st.write(answer)
+            if verified:
+                st.caption("✅ Verified as grounded in the knowledge base")
+            else:
+                st.caption("🔁 Revised after a groundedness check")
         st.session_state.history += [("user", question), ("assistant", answer)]
 
 

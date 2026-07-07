@@ -23,6 +23,7 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 | | |
 |---|---|
 | ✅ **Grounded answers** | Every response comes from the source documents — no hallucinated legal claims |
+| 🛡️ **Supervised** | A second LLM independently verifies each draft answer before it's shown |
 | 📚 **Source citations** | Each answer names the document it's drawn from |
 | 💬 **Conversational memory** | Follow-up questions keep context via LangGraph |
 | 🆓 **Zero cost to run** | Free-tier LLM (Groq) + local embeddings — no API bills, no rate limits |
@@ -37,15 +38,19 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 └─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
                                                                   │
                                                                   ▼
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
-│   Response  │◀───│ LangGraph    │◀───│ ChromaDB    │◀───│  Vectors     │
-└─────────────┘    │   Agent      │    │ Vector Store│    └──────────────┘
-                   └──────────────┘
-                          │
-                          ▼
-                   ┌──────────────┐
-                   │  Groq LLM    │
-                   └──────────────┘
+                                                           ┌──────────────┐
+                                                           │   ChromaDB   │
+                                                           │ Vector Store │
+                                                           └──────┬───────┘
+                                                                  │
+                                                                  ▼
+┌──────────┐    ┌────────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
+│   User   │───▶│  Retrieve  │───▶│ Generate  │───▶│  Verify  │───▶│ Finalize │
+│ Question │    │  (Chroma)  │    │  (Groq)   │    │  (Groq)  │    │          │
+└──────────┘    └────────────┘    └───────────┘    └────┬─────┘    └────┬─────┘
+                                        ▲                │ invalid       │
+                                        └── Revise ◀──────┘               ▼
+                                                                       Response
 ```
 
 1. **Ingest** — PDFs parsed with PyPDFLoader
@@ -53,8 +58,12 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 3. **Embed** — Sentence Transformers (`all-MiniLM-L6-v2`), fully local
 4. **Store** — ChromaDB, persisted to disk (758 chunks)
 5. **Retrieve** — top-4 relevant chunks per query
-6. **Generate** — Groq (`llama-3.1-8b-instant`) answers strictly from retrieved context
-7. **Remember** — LangGraph `MemorySaver` keeps conversation state
+6. **Generate** — Groq (`llama-3.1-8b-instant`) drafts an answer strictly from retrieved context
+7. **Verify** — a second Groq call acts as a supervisor, checking the draft is fully grounded in that same context
+8. **Revise** *(only if the check fails)* — regenerates the answer, told exactly what was unsupported
+9. **Remember** — LangGraph `MemorySaver` keeps conversation state across turns
+
+The generate → verify → revise loop is a small agent-to-agent pattern (generator + critic) rather than a single model policing itself — important for a compliance/ethics domain where an unverified fabricated citation is the worst possible failure mode.
 
 📄 Full technical write-up in [ARCHITECTURE.md](ARCHITECTURE.md) · Design rationale in [DECISIONS.md](DECISIONS.md)
 
@@ -156,6 +165,7 @@ ai-ethics-assistant/
 ## 🛡️ Responsible AI Design
 
 - **Grounding rule** — the agent answers *only* from retrieved context; it explicitly says "I don't have enough information" rather than guessing
+- **Supervisor verification** — a second LLM call independently checks every draft answer against the retrieved context before it's shown, and triggers a correction if it finds an unsupported claim
 - **Source attribution** — every answer names the document it came from
 - **Plain-language explanations** — written for non-lawyers
 - **Legal disclaimer** — the assistant is not a substitute for professional legal advice
