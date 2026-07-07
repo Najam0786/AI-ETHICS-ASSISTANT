@@ -10,6 +10,8 @@
 
 **🔗 [Try the live app](https://ai-ethics-assistantgit-7qvdmuzrt9xwhgfzbsoub5.streamlit.app/)** · **📦 [Source on GitHub](https://github.com/Najam0786/AI-ETHICS-ASSISTANT)**
 
+> **⚠️ Note on the LLM/embeddings stack:** this project was originally built on Google Gemini for both the LLM and embeddings. Gemini's free-tier quota (1,000 embedding requests/day, 100 requests/minute) repeatedly blocked development, so the stack was deliberately migrated to **Groq** (LLM) + **local Sentence Transformers** (embeddings) — both genuinely free with no rate limits. The RAG architecture, LangGraph agent, memory, and system prompt design are all unchanged. Full rationale and alternatives considered in [DECISIONS.md](DECISIONS.md#technology-stack).
+
 ---
 
 ## 📖 Overview
