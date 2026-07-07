@@ -257,13 +257,9 @@ def load_agent():
 USER_AVATAR = "🧑‍💻"
 ASSISTANT_AVATAR = "⚖️"
 
-SUGGESTED_QUESTIONS = [
-    ("⚖️", "High-risk AI systems", "What is considered a high-risk AI system under the EU AI Act?"),
-    ("📊", "Bias & fairness", "What are the main types of bias in machine learning?"),
-    ("✅", "Trustworthy AI", "What are the seven requirements for trustworthy AI?"),
-    ("🏥", "AI in healthcare", "What ethical concerns does AI raise in healthcare?"),
-]
-
+# EU flag colors (Pantone Reflex Blue #003399, gold #FFCC00) as the base
+# palette, rather than a generic purple gradient — the subject is European
+# AI regulation, so the theme should read as European at a glance.
 CUSTOM_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -274,20 +270,22 @@ footer { visibility: hidden; }
 
 .hero {
     text-align: center;
-    padding: 1.75rem 1rem 1.25rem 1rem;
-    margin-bottom: 0.5rem;
+    padding: 1.75rem 1rem 1.1rem 1rem;
+    margin-bottom: 0.25rem;
+    border-bottom: 3px solid;
+    border-image: linear-gradient(90deg, #003399 0%, #FFCC00 100%) 1;
 }
 .hero h1 {
-    font-size: 2.4rem;
+    font-size: 2.5rem;
     font-weight: 800;
-    margin-bottom: 0.25rem;
-    background: linear-gradient(135deg, #4338CA 0%, #7C3AED 55%, #C026D3 100%);
+    margin-bottom: 0.3rem;
+    background: linear-gradient(135deg, #002868 0%, #003399 55%, #0052CC 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
 }
 .hero p {
-    color: #6B7280;
+    color: #4B5768;
     font-size: 1.02rem;
     max-width: 640px;
     margin: 0 auto;
@@ -297,18 +295,19 @@ footer { visibility: hidden; }
     justify-content: center;
     gap: 0.5rem;
     flex-wrap: wrap;
-    margin-top: 0.9rem;
+    margin-top: 1rem;
 }
 .pill {
     display: inline-block;
-    padding: 0.28rem 0.85rem;
+    padding: 0.28rem 0.9rem;
     border-radius: 999px;
     font-size: 0.78rem;
     font-weight: 600;
-    background: #F5F3FF;
-    color: #5B21B6;
-    border: 1px solid #E9D5FF;
+    background: #EAF0FC;
+    color: #003399;
+    border: 1px solid #B9CCF0;
 }
+.pill.gold { background: #FFF9E0; color: #8A6D00; border-color: #FFE58A; }
 
 .status-pill {
     display: inline-block;
@@ -327,29 +326,71 @@ footer { visibility: hidden; }
     margin-bottom: 0.35rem;
 }
 
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #F5F3FF 0%, #FFFFFF 45%);
+/* Chat input: rounded, EU-blue border, gold glow on focus */
+div[data-testid="stChatInput"] {
+    border-radius: 14px;
 }
-section[data-testid="stSidebar"] .stMetric {
+div[data-testid="stChatInput"] > div {
+    border-radius: 14px;
+    border: 1.5px solid #B9CCF0;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+div[data-testid="stChatInput"]:focus-within > div {
+    border-color: #003399;
+    box-shadow: 0 0 0 3px rgba(255, 204, 0, 0.35);
+}
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #F0F4FC 0%, #FFFFFF 50%);
+}
+
+.stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+}
+.stat-card {
     background: #FFFFFF;
     border-radius: 12px;
-    padding: 0.6rem 0.8rem;
-    border: 1px solid #EDE9FE;
-    box-shadow: 0 1px 2px rgba(76, 29, 149, 0.06);
+    padding: 0.7rem 0.8rem;
+    border-left: 4px solid var(--accent, #003399);
+    box-shadow: 0 1px 3px rgba(15, 26, 60, 0.08);
+}
+.stat-card .stat-icon { font-size: 1.05rem; }
+.stat-card .stat-value { font-size: 1.5rem; font-weight: 800; color: #0F1A3C; line-height: 1.15; }
+.stat-card .stat-label { font-size: 0.72rem; color: #6B7690; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; }
+
+.reliability-bar-track {
+    width: 100%;
+    height: 9px;
+    background: #E7ECF7;
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 0.75rem 0 0.3rem 0;
+}
+.reliability-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #003399 0%, #FFCC00 100%);
+    border-radius: 999px;
+}
+.reliability-bar-label {
+    font-size: 0.75rem;
+    color: #6B7690;
+    font-weight: 600;
 }
 
 div[data-testid="stButton"] button {
     border-radius: 10px;
-    border: 1px solid #E9D5FF;
+    border: 1px solid #B9CCF0;
     background: #FFFFFF;
-    color: #4338CA;
+    color: #003399;
     font-weight: 600;
     transition: all 0.15s ease;
 }
 div[data-testid="stButton"] button:hover {
-    background: #F5F3FF;
-    border-color: #C4B5FD;
-    color: #5B21B6;
+    background: #EAF0FC;
+    border-color: #003399;
 }
 </style>
 """
@@ -408,13 +449,13 @@ def main():
         """
         <div class="hero">
             <h1>⚖️ AI Ethics Assistant</h1>
-            <p>Expert on European AI ethics & regulation — grounded in the EU AI Act,
+            <p>🇪🇺 Expert on European AI ethics & regulation — grounded in the EU AI Act,
             EU ethics guidelines and academic research.</p>
             <div class="badge-row">
                 <span class="pill">🧠 LangGraph Agent</span>
-                <span class="pill">🛡️ Self-Verifying</span>
+                <span class="pill gold">🛡️ Self-Verifying</span>
                 <span class="pill">⚡ Groq-Powered</span>
-                <span class="pill">🆓 Free & Open Source</span>
+                <span class="pill gold">🆓 Free & Open Source</span>
             </div>
         </div>
         """,
@@ -434,16 +475,6 @@ def main():
     if "stats" not in st.session_state:
         st.session_state.stats = {"total": 0, "verified": 0, "revised": 0, "low_confidence": 0}
 
-    # Suggested-question chips — only shown before the conversation starts,
-    # so returning users get the full chat history instead of clutter.
-    if not st.session_state.history:
-        st.write("**Try asking:**")
-        cols = st.columns(2)
-        for i, (icon, label, question) in enumerate(SUGGESTED_QUESTIONS):
-            if cols[i % 2].button(f"{icon} {label}", use_container_width=True, key=f"suggest_{i}"):
-                ask_agent(agent, question)
-                st.rerun()
-
     # Display chat history (with each answer's original verification badge)
     for msg in st.session_state.history:
         with st.chat_message(msg["role"], avatar=USER_AVATAR if msg["role"] == "user" else ASSISTANT_AVATAR):
@@ -455,18 +486,58 @@ def main():
     if question := st.chat_input("Ask about the EU AI Act, bias, trustworthy AI..."):
         ask_agent(agent, question)
 
-    # Session reliability stats — a live, measurable view of how often the
-    # supervisor had to intervene, rather than an anecdotal "it seems fine".
+    # Sidebar: live, measurable reliability stats (rather than an anecdotal
+    # "it seems fine"), plus a way to start over that the old suggested-
+    # question chips didn't offer.
     with st.sidebar:
         st.markdown("### 📊 Session Reliability")
         stats = st.session_state.stats
         if stats["total"]:
-            st.metric("Questions asked", stats["total"])
-            st.metric("Verified first try", f"{stats['verified']} ({stats['verified'] / stats['total'] * 100:.0f}%)")
-            st.metric("Revised after check", stats["revised"])
-            st.metric("Low retrieval confidence", stats["low_confidence"])
+            verified_pct = stats["verified"] / stats["total"] * 100
+            st.markdown(
+                f"""
+                <div class="stat-grid">
+                    <div class="stat-card" style="--accent:#003399;">
+                        <div class="stat-icon">💬</div>
+                        <div class="stat-value">{stats['total']}</div>
+                        <div class="stat-label">Questions</div>
+                    </div>
+                    <div class="stat-card" style="--accent:#059669;">
+                        <div class="stat-icon">✅</div>
+                        <div class="stat-value">{stats['verified']}</div>
+                        <div class="stat-label">Verified</div>
+                    </div>
+                    <div class="stat-card" style="--accent:#D97706;">
+                        <div class="stat-icon">🔁</div>
+                        <div class="stat-value">{stats['revised']}</div>
+                        <div class="stat-label">Revised</div>
+                    </div>
+                    <div class="stat-card" style="--accent:#6B7690;">
+                        <div class="stat-icon">🔎</div>
+                        <div class="stat-value">{stats['low_confidence']}</div>
+                        <div class="stat-label">Low Confidence</div>
+                    </div>
+                </div>
+                <div class="reliability-bar-label">{verified_pct:.0f}% verified on first try</div>
+                <div class="reliability-bar-track">
+                    <div class="reliability-bar-fill" style="width:{verified_pct:.0f}%;"></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         else:
             st.caption("Ask a question to see reliability stats for this session.")
+
+        if st.session_state.history:
+            st.button(
+                "🔄 Start new conversation",
+                use_container_width=True,
+                on_click=lambda: (
+                    st.session_state.update(
+                        history=[], stats={"total": 0, "verified": 0, "revised": 0, "low_confidence": 0}
+                    )
+                ),
+            )
 
         st.divider()
         with st.expander("ℹ️ About this assistant"):

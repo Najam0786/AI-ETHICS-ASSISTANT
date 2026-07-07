@@ -145,14 +145,14 @@ streamlit run app/streamlit_app.py
 
 ### 💡 Usage
 
-Open the app and click one of the **suggested-question chips**, or ask your own — things like:
+Open the app and ask things like:
 
 - *"What are the prohibited AI practices under the EU AI Act?"*
 - *"How does the Act define high-risk AI systems?"*
 - *"What are the 7 requirements for trustworthy AI?"*
 - *"What are common sources of bias in machine learning models?"*
 
-Each answer shows a colored status pill (✅ verified / 🔁 revised), and the sidebar's **Session Reliability** panel tracks a live verified/revised/low-confidence count for the whole session.
+Each answer shows a colored status pill (✅ verified / 🔁 revised), and the sidebar's **Session Reliability** panel shows live stat cards plus a verified-percentage bar for the whole session — with a **🔄 Start new conversation** button to reset.
 
 Or explore [`notebooks/ai_ethics_assistant.ipynb`](notebooks/ai_ethics_assistant.ipynb) to inspect the RAG pipeline step by step.
 
