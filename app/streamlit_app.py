@@ -36,17 +36,15 @@ TOP_K = 4
 FETCH_K = 20            # candidates considered by MMR before diversity re-ranking
 MMR_LAMBDA = 0.5        # 0 = max diversity, 1 = pure relevance
 
-# Chroma's default distance is squared L2 (lower = more similar). Calibrated
-# empirically against this corpus: in-scope questions scored 0.43-0.75,
-# out-of-scope questions scored 1.02-1.78 — a clean gap. 0.9 sits in that
-# gap with margin on both sides. See DECISIONS.md for the calibration data.
-SIMILARITY_THRESHOLD = 0.9
-
-ABSTAIN_MESSAGE = (
-    "I don't have enough information in my knowledge base to answer that. "
-    "Try asking about the EU AI Act, bias and fairness in machine learning, "
-    "or the EU's trustworthy AI guidelines."
-)
+# Chroma's default distance is squared L2 (lower = more similar). A hard
+# pre-generation abstain gate on this score was tried and removed: typo'd or
+# very short in-scope questions (e.g. "What do you mean by Bais?", a typo for
+# "bias") scored *worse* (1.5+) than several genuinely out-of-scope questions,
+# so no threshold could separate the two without also blocking legitimate
+# questions. generate -> verify already handles out-of-scope questions
+# correctly (proven in testing), so top_score is kept only as a logged/
+# displayed confidence signal, not a gate. See DECISIONS.md for the data.
+LOW_CONFIDENCE_LOG_THRESHOLD = 1.0  # informational label only, never blocks generation
 
 SYSTEM_PROMPT = """You are an expert assistant on European AI ethics and regulation.
 
@@ -201,23 +199,6 @@ def load_agent():
         logger.info("retrieve: top_score=%.4f sources=%s", top_score, sources_retrieved)
         return {"context": context, "top_score": top_score, "sources_retrieved": sources_retrieved}
 
-    def route_after_retrieve(state: AgentState) -> Literal["generate", "abstain"]:
-        return "abstain" if state["top_score"] > SIMILARITY_THRESHOLD else "generate"
-
-    def abstain(state: AgentState) -> dict:
-        """No retrieved chunk is confident enough to answer from — refuse deterministically
-        instead of letting the LLM decide whether it knows enough."""
-        logger.info(
-            "abstain: top_score=%.4f exceeds threshold=%.2f", state["top_score"], SIMILARITY_THRESHOLD
-        )
-        return {
-            "draft": ABSTAIN_MESSAGE,
-            "verification": (
-                f"ABSTAINED: retrieval confidence too low "
-                f"(top score {state['top_score']:.2f} > threshold {SIMILARITY_THRESHOLD})"
-            ),
-        }
-
     def generate(state: AgentState) -> dict:
         """Generate a draft response using the LLM with retrieved context."""
         system = SystemMessage(content=SYSTEM_PROMPT.format(context=state["context"]))
@@ -253,23 +234,20 @@ def load_agent():
         return {"draft": response.content}
 
     def finalize(state: AgentState) -> dict:
-        """Commit the (possibly revised, possibly abstained) draft as the final answer."""
+        """Commit the (possibly revised) draft as the final answer."""
         return {"messages": [AIMessage(content=state["draft"])]}
 
-    # Build agent graph:
-    #   retrieve -> [abstain | generate -> verify -> [finalize | revise]] -> finalize
+    # Build agent graph: retrieve -> generate -> verify -> [finalize | revise -> finalize]
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("retrieve", retrieve)
-    graph_builder.add_node("abstain", abstain)
     graph_builder.add_node("generate", generate)
     graph_builder.add_node("verify", verify)
     graph_builder.add_node("revise", revise)
     graph_builder.add_node("finalize", finalize)
     graph_builder.add_edge(START, "retrieve")
-    graph_builder.add_conditional_edges("retrieve", route_after_retrieve)
+    graph_builder.add_edge("retrieve", "generate")
     graph_builder.add_edge("generate", "verify")
     graph_builder.add_conditional_edges("verify", route_after_verify)
-    graph_builder.add_edge("abstain", "finalize")
     graph_builder.add_edge("revise", "finalize")
     graph_builder.add_edge("finalize", END)
 
@@ -303,7 +281,7 @@ def main():
     if "history" not in st.session_state:
         st.session_state.history = []
     if "stats" not in st.session_state:
-        st.session_state.stats = {"total": 0, "verified": 0, "revised": 0, "abstained": 0}
+        st.session_state.stats = {"total": 0, "verified": 0, "revised": 0, "low_confidence": 0}
 
     # Display chat history
     for role, text in st.session_state.history:
@@ -323,15 +301,14 @@ def main():
 
         stats = st.session_state.stats
         stats["total"] += 1
-        if verification.startswith("ABSTAINED"):
-            stats["abstained"] += 1
-            badge = "🚫 Abstained — retrieval confidence too low for this question"
-        elif verification.startswith("VALID"):
+        if verification.startswith("VALID"):
             stats["verified"] += 1
             badge = "✅ Verified as grounded in the knowledge base"
         else:
             stats["revised"] += 1
             badge = "🔁 Revised after failing a groundedness/relevance check"
+        if result.get("top_score", 0) > LOW_CONFIDENCE_LOG_THRESHOLD:
+            stats["low_confidence"] += 1
 
         # Display response and update history
         with st.chat_message("assistant"):
@@ -348,7 +325,7 @@ def main():
             st.metric("Questions asked", stats["total"])
             st.metric("Verified first try", f"{stats['verified']} ({stats['verified'] / stats['total'] * 100:.0f}%)")
             st.metric("Revised after check", stats["revised"])
-            st.metric("Abstained (low confidence)", stats["abstained"])
+            st.metric("Low retrieval confidence", stats["low_confidence"])
         else:
             st.caption("Ask a question to see reliability stats for this session.")
 

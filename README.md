@@ -23,12 +23,11 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 | | |
 |---|---|
 | ✅ **Grounded answers** | Every response comes from the source documents — no hallucinated legal claims |
-| 🚫 **Refuses out-of-scope questions** | A confidence gate abstains before generation if retrieval doesn't find real support |
 | 🛡️ **Supervised** | A second LLM independently checks each draft for faithfulness *and* relevance before it's shown |
 | 🔍 **Citation-checked** | A deterministic check catches a cited source that wasn't actually retrieved |
 | 📚 **Source citations** | Each answer names the document it's drawn from |
 | 💬 **Conversational memory** | Follow-up questions keep context via LangGraph |
-| 📊 **Measurable reliability** | Every query logs its confidence score and verdict — a real verified/revised/abstained rate, not a guess |
+| 📊 **Measurable reliability** | Every query logs its retrieval confidence and verification verdict — a real verified/revised rate, not a guess |
 | 🆓 **Zero cost to run** | Free-tier LLM (Groq) + local embeddings — no API bills, no rate limits |
 
 ---
@@ -41,45 +40,27 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 └─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
                                                                   │
                                                                   ▼
-                                                           ┌──────────────┐
-                                                           │   ChromaDB   │
-                                                           │ Vector Store │
-                                                           └──────┬───────┘
-                                                                  │
-                                                                  ▼
-                                                           ┌──────────────┐
-┌──────────┐                                              │   Retrieve   │
-│   User   │─────────────────────────────────────────────▶│ (MMR + score)│
-│ Question │                                              └──────┬───────┘
-└──────────┘                                        low score    │  confident
-                                        ┌────────────────────────┴───────────┐
-                                        ▼                                    ▼
-                                 ┌────────────┐                       ┌────────────┐
-                                 │  Abstain   │                       │  Generate  │
-                                 └─────┬──────┘                       └─────┬──────┘
-                                       │                                    ▼
-                                       │                             ┌────────────┐
-                                       │                             │   Verify   │◀── citation check +
-                                       │                             └─────┬──────┘    faithfulness/relevance
-                                       │                       valid       │  invalid
-                                       │              ┌────────────────────┴──────┐
-                                       │              ▼                          ▼
-                                       │        ┌────────────┐            ┌────────────┐
-                                       │        │  Finalize  │◀───────────│   Revise   │
-                                       │        └─────┬──────┘            └────────────┘
-                                       └──────────────┴───────▶ Response
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
+│   Response  │◀───│   Finalize   │◀───│   Verify    │◀───│   Retrieve   │
+└─────────────┘    └──────▲───────┘    │ (citation + │    │ (MMR + Groq) │
+                          │            │  faith/rel) │    └──────▲───────┘
+                    ┌─────┴─────┐      └──────┬──────┘           │
+                    │  Revise   │◀────invalid──┘                 │
+                    └───────────┘                          ┌─────┴──────┐
+                                                             │  Generate  │
+                                                             │   (Groq)   │
+                                                             └────────────┘
 ```
 
 1. **Ingest** — PDFs parsed with PyPDFLoader
 2. **Clean & chunk** — normalized text split into 1,400-char chunks (150-char overlap)
 3. **Embed** — Sentence Transformers (`all-MiniLM-L6-v2`), fully local
 4. **Store** — ChromaDB, persisted to disk (758 chunks)
-5. **Retrieve** — MMR search for 4 diverse relevant chunks, plus a separate top-1 similarity score used only as a confidence signal
-6. **Gate** — if that confidence score is too low, **abstain immediately** with no LLM call — see [Hallucination Defenses](#hallucination-defenses) below
-7. **Generate** — Groq (`llama-3.1-8b-instant`) drafts an answer strictly from retrieved context
-8. **Verify** — a deterministic citation check, then a second Groq call checking faithfulness *and* relevance
-9. **Revise** *(only if the check fails)* — regenerates the answer, told exactly what was wrong
-10. **Remember** — LangGraph `MemorySaver` keeps conversation state across turns
+5. **Retrieve** — MMR search for 4 diverse relevant chunks, plus a separate top-1 similarity score logged as a confidence signal (see [Hallucination Defenses](#hallucination-defenses) for why this isn't used to block answers)
+6. **Generate** — Groq (`llama-3.1-8b-instant`) drafts an answer strictly from retrieved context
+7. **Verify** — a deterministic citation check, then a second Groq call checking faithfulness *and* relevance
+8. **Revise** *(only if the check fails)* — regenerates the answer, told exactly what was wrong
+9. **Remember** — LangGraph `MemorySaver` keeps conversation state across turns
 
 📄 Full technical write-up in [ARCHITECTURE.md](ARCHITECTURE.md) · Design rationale in [DECISIONS.md](DECISIONS.md)
 
@@ -87,18 +68,17 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 
 ## 🛡️ Hallucination Defenses
 
-**The core problem:** we can't control what a user asks, but we *can* control what the agent does and doesn't answer when the knowledge base doesn't genuinely support it. A system prompt telling the model to say "I don't know" is a request, not a guarantee — testing surfaced real cases where the LLM answered anyway, citing a source that was never retrieved, or dodging the actual question while staying technically "grounded." So the agent uses four independent, complementary checks instead of trusting one model's judgment:
+**The core problem:** we can't control what a user asks, but we *can* control what the agent does and doesn't answer when the knowledge base doesn't genuinely support it. A system prompt telling the model to say "I don't know" is a request, not a guarantee — testing surfaced real cases where the LLM answered anyway, citing a source that was never retrieved, or dodging the actual question while staying technically "grounded." So the agent uses independent, complementary checks instead of trusting one model's judgment:
 
 | # | Defense | Type | Catches |
 |---|---|---|---|
-| 1 | **Retrieval confidence gate** | Deterministic, zero LLM calls | Out-of-scope questions — abstains before generation ever runs if the best-matching chunk's similarity score exceeds 0.9 (Chroma L2 distance; calibrated empirically — in-scope questions scored 0.43–0.75, out-of-scope 1.02–1.78) |
-| 2 | **MMR retrieval** (vs. plain top-k similarity) | Retrieval quality | Near-duplicate chunks crowding out genuinely diverse context, which pushes the LLM to "fill gaps" with invented detail |
-| 3 | **Deterministic citation cross-check** | Rule-based, zero LLM calls in the common case | A cited source that was never actually retrieved — checked by plain string matching before any LLM judges the draft |
-| 4 | **Supervisor LLM check (faithfulness *and* relevance)** | Second independent Groq call | Fabricated claims not in context (faithfulness), *and* answers that are technically grounded but dodge the actual question (relevance) — faithfulness alone can pass an evasive non-answer |
+| 1 | **MMR retrieval** (vs. plain top-k similarity) | Retrieval quality | Near-duplicate chunks crowding out genuinely diverse context, which pushes the LLM to "fill gaps" with invented detail |
+| 2 | **Deterministic citation cross-check** | Rule-based, zero LLM calls in the common case | A cited source that was never actually retrieved — checked by plain string matching before any LLM judges the draft |
+| 3 | **Supervisor LLM check (faithfulness *and* relevance)** | Second independent Groq call | Fabricated claims not in context (faithfulness), *and* answers that are technically grounded but dodge the actual question (relevance) — faithfulness alone can pass an evasive non-answer |
 
-Layers 1 and 3 are why a fabricated or off-scope answer can be caught with **zero additional LLM calls** in most cases — a deterministic rule doesn't need to "agree" with anything, unlike an LLM judging another LLM. Layer 4 is the one extra Groq call in the common path (two if a revision is needed), consistent with the project's free/fast design.
+**A fourth layer was tried and removed:** a hard pre-generation gate that abstained whenever retrieval confidence exceeded a calibrated threshold, so obviously out-of-scope questions never reached the LLM at all. It worked for clean cases, but real usage exposed a problem: a typo as small as *"Bais"* instead of *"bias"* scored **worse** than several genuinely out-of-scope test questions — no threshold could separate "typo of a real topic" from "actually irrelevant" using embedding similarity alone, so the gate was blocking legitimate questions. Since `generate → verify` was already proven to correctly handle genuinely out-of-scope questions on its own, the gate added real risk (false refusals) for no safety benefit, so it was removed. The retrieval score is still computed and logged for observability, just no longer used to block generation. Full before/after data in [DECISIONS.md](DECISIONS.md#hallucination-defenses).
 
-Every retrieval score and verification verdict is logged, and the Streamlit sidebar shows a live **Session Reliability** panel — verified/revised/abstained counts and percentages — so reliability is a measured number, not an impression. See [DECISIONS.md](DECISIONS.md#hallucination-defenses) for the calibration data and alternatives considered.
+Every retrieval score and verification verdict is logged, and the Streamlit sidebar shows a live **Session Reliability** panel — verified/revised counts and a low-confidence tally — so reliability is a measured number, not an impression.
 
 ---
 
