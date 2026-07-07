@@ -23,9 +23,12 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 | | |
 |---|---|
 | ✅ **Grounded answers** | Every response comes from the source documents — no hallucinated legal claims |
-| 🛡️ **Supervised** | A second LLM independently verifies each draft answer before it's shown |
+| 🚫 **Refuses out-of-scope questions** | A confidence gate abstains before generation if retrieval doesn't find real support |
+| 🛡️ **Supervised** | A second LLM independently checks each draft for faithfulness *and* relevance before it's shown |
+| 🔍 **Citation-checked** | A deterministic check catches a cited source that wasn't actually retrieved |
 | 📚 **Source citations** | Each answer names the document it's drawn from |
 | 💬 **Conversational memory** | Follow-up questions keep context via LangGraph |
+| 📊 **Measurable reliability** | Every query logs its confidence score and verdict — a real verified/revised/abstained rate, not a guess |
 | 🆓 **Zero cost to run** | Free-tier LLM (Groq) + local embeddings — no API bills, no rate limits |
 
 ---
@@ -44,28 +47,58 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
                                                            └──────┬───────┘
                                                                   │
                                                                   ▼
-┌──────────┐    ┌────────────┐    ┌───────────┐    ┌──────────┐    ┌──────────┐
-│   User   │───▶│  Retrieve  │───▶│ Generate  │───▶│  Verify  │───▶│ Finalize │
-│ Question │    │  (Chroma)  │    │  (Groq)   │    │  (Groq)  │    │          │
-└──────────┘    └────────────┘    └───────────┘    └────┬─────┘    └────┬─────┘
-                                        ▲                │ invalid       │
-                                        └── Revise ◀──────┘               ▼
-                                                                       Response
+                                                           ┌──────────────┐
+┌──────────┐                                              │   Retrieve   │
+│   User   │─────────────────────────────────────────────▶│ (MMR + score)│
+│ Question │                                              └──────┬───────┘
+└──────────┘                                        low score    │  confident
+                                        ┌────────────────────────┴───────────┐
+                                        ▼                                    ▼
+                                 ┌────────────┐                       ┌────────────┐
+                                 │  Abstain   │                       │  Generate  │
+                                 └─────┬──────┘                       └─────┬──────┘
+                                       │                                    ▼
+                                       │                             ┌────────────┐
+                                       │                             │   Verify   │◀── citation check +
+                                       │                             └─────┬──────┘    faithfulness/relevance
+                                       │                       valid       │  invalid
+                                       │              ┌────────────────────┴──────┐
+                                       │              ▼                          ▼
+                                       │        ┌────────────┐            ┌────────────┐
+                                       │        │  Finalize  │◀───────────│   Revise   │
+                                       │        └─────┬──────┘            └────────────┘
+                                       └──────────────┴───────▶ Response
 ```
 
 1. **Ingest** — PDFs parsed with PyPDFLoader
 2. **Clean & chunk** — normalized text split into 1,400-char chunks (150-char overlap)
 3. **Embed** — Sentence Transformers (`all-MiniLM-L6-v2`), fully local
 4. **Store** — ChromaDB, persisted to disk (758 chunks)
-5. **Retrieve** — top-4 relevant chunks per query
-6. **Generate** — Groq (`llama-3.1-8b-instant`) drafts an answer strictly from retrieved context
-7. **Verify** — a second Groq call acts as a supervisor, checking the draft is fully grounded in that same context
-8. **Revise** *(only if the check fails)* — regenerates the answer, told exactly what was unsupported
-9. **Remember** — LangGraph `MemorySaver` keeps conversation state across turns
-
-The generate → verify → revise loop is a small agent-to-agent pattern (generator + critic) rather than a single model policing itself — important for a compliance/ethics domain where an unverified fabricated citation is the worst possible failure mode.
+5. **Retrieve** — MMR search for 4 diverse relevant chunks, plus a separate top-1 similarity score used only as a confidence signal
+6. **Gate** — if that confidence score is too low, **abstain immediately** with no LLM call — see [Hallucination Defenses](#hallucination-defenses) below
+7. **Generate** — Groq (`llama-3.1-8b-instant`) drafts an answer strictly from retrieved context
+8. **Verify** — a deterministic citation check, then a second Groq call checking faithfulness *and* relevance
+9. **Revise** *(only if the check fails)* — regenerates the answer, told exactly what was wrong
+10. **Remember** — LangGraph `MemorySaver` keeps conversation state across turns
 
 📄 Full technical write-up in [ARCHITECTURE.md](ARCHITECTURE.md) · Design rationale in [DECISIONS.md](DECISIONS.md)
+
+---
+
+## 🛡️ Hallucination Defenses
+
+**The core problem:** we can't control what a user asks, but we *can* control what the agent does and doesn't answer when the knowledge base doesn't genuinely support it. A system prompt telling the model to say "I don't know" is a request, not a guarantee — testing surfaced real cases where the LLM answered anyway, citing a source that was never retrieved, or dodging the actual question while staying technically "grounded." So the agent uses four independent, complementary checks instead of trusting one model's judgment:
+
+| # | Defense | Type | Catches |
+|---|---|---|---|
+| 1 | **Retrieval confidence gate** | Deterministic, zero LLM calls | Out-of-scope questions — abstains before generation ever runs if the best-matching chunk's similarity score exceeds 0.9 (Chroma L2 distance; calibrated empirically — in-scope questions scored 0.43–0.75, out-of-scope 1.02–1.78) |
+| 2 | **MMR retrieval** (vs. plain top-k similarity) | Retrieval quality | Near-duplicate chunks crowding out genuinely diverse context, which pushes the LLM to "fill gaps" with invented detail |
+| 3 | **Deterministic citation cross-check** | Rule-based, zero LLM calls in the common case | A cited source that was never actually retrieved — checked by plain string matching before any LLM judges the draft |
+| 4 | **Supervisor LLM check (faithfulness *and* relevance)** | Second independent Groq call | Fabricated claims not in context (faithfulness), *and* answers that are technically grounded but dodge the actual question (relevance) — faithfulness alone can pass an evasive non-answer |
+
+Layers 1 and 3 are why a fabricated or off-scope answer can be caught with **zero additional LLM calls** in most cases — a deterministic rule doesn't need to "agree" with anything, unlike an LLM judging another LLM. Layer 4 is the one extra Groq call in the common path (two if a revision is needed), consistent with the project's free/fast design.
+
+Every retrieval score and verification verdict is logged, and the Streamlit sidebar shows a live **Session Reliability** panel — verified/revised/abstained counts and percentages — so reliability is a measured number, not an impression. See [DECISIONS.md](DECISIONS.md#hallucination-defenses) for the calibration data and alternatives considered.
 
 ---
 
@@ -164,8 +197,7 @@ ai-ethics-assistant/
 
 ## 🛡️ Responsible AI Design
 
-- **Grounding rule** — the agent answers *only* from retrieved context; it explicitly says "I don't have enough information" rather than guessing
-- **Supervisor verification** — a second LLM call independently checks every draft answer against the retrieved context before it's shown, and triggers a correction if it finds an unsupported claim
+- **Grounding rule** — the agent answers *only* from retrieved context; it explicitly says "I don't have enough information" rather than guessing (see [Hallucination Defenses](#hallucination-defenses) for the four independent layers enforcing this)
 - **Source attribution** — every answer names the document it came from
 - **Plain-language explanations** — written for non-lawyers
 - **Legal disclaimer** — the assistant is not a substitute for professional legal advice

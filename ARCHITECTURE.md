@@ -9,29 +9,53 @@ The AI Ethics Assistant is a RAG-based (Retrieval-Augmented Generation) conversa
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Interface                           │
-│                      (Streamlit Web App)                         │
-└────────────────────────┬────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         User Interface                                   │
+│                      (Streamlit Web App)                                 │
+└────────────────────────┬──────────────────────────────────────────────-─┘
                          │
                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      LangGraph Agent                              │
-│                                                                    │
-│  ┌──────────┐   ┌──────────┐   ┌─────────┐   ┌─────────┐        │
-│  │ Retrieve │──▶│ Generate │──▶│ Verify  │──▶│Finalize │──▶ END  │
-│  └────┬─────┘   └──────────┘   └────┬────┘   └────▲────┘        │
-│       │                             │ invalid       │             │
-│       ▼                             ▼               │             │
-│  ┌──────────┐                  ┌─────────┐          │             │
-│  │ ChromaDB │                  │ Revise  │──────────┘             │
-│  │  Vector  │                  └─────────┘                        │
-│  │  Store   │                                                     │
-│  └──────────┘        Generate/Verify/Revise all call Groq LLM     │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          LangGraph Agent                                 │
+│                                                                           │
+│  ┌──────────┐   low score   ┌─────────┐                                 │
+│  │ Retrieve │──────────────▶│ Abstain │───────────────────┐             │
+│  │ (MMR +   │               └─────────┘                   │             │
+│  │  score)  │  confident                                   ▼             │
+│  └────┬─────┘─────────▶┌──────────┐   ┌─────────┐   ┌──────────┐        │
+│       │                │ Generate │──▶│ Verify  │──▶│ Finalize │──▶ END │
+│       ▼                └──────────┘   └────┬────┘   └────▲─────┘        │
+│  ┌──────────┐                          invalid │            │            │
+│  │ ChromaDB │                               ▼               │            │
+│  │  Vector  │                         ┌─────────┐           │            │
+│  │  Store   │                         │ Revise  │───────────┘            │
+│  └──────────┘         Generate/Verify/Revise all call Groq LLM           │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-`Verify` is a supervisor node: a second, independent LLM call that checks the draft answer against the same retrieved context and returns `VALID` or `INVALID: <reason>`. Only on `INVALID` does the graph route to `Revise`, which regenerates the answer with the specific gap called out — otherwise it goes straight to `Finalize`. This generator+critic pattern catches fabricated citations and unsupported claims that a single-pass RAG agent would let through, which matters for a compliance/ethics domain where a confident, ungrounded answer is worse than "I don't know."
+Four independent checks, not one — see [Hallucination Defenses](#hallucination-defenses) below for why each layer exists and what it catches:
+
+- **`Retrieve` → `Abstain`** (deterministic, no LLM call): if the best-matching chunk's similarity score exceeds a calibrated threshold, the agent refuses immediately rather than trusting the LLM's judgment about whether it knows enough.
+- **`Retrieve` uses MMR**, not plain top-k similarity, so the 4 chunks handed to the LLM are diverse rather than near-duplicates of each other.
+- **`Verify`** runs a deterministic citation cross-check first (does the draft cite a source that wasn't actually retrieved?), then — only if that passes — a second, independent Groq call checking both faithfulness (is every claim supported by context?) and relevance (does the draft actually answer the question, rather than dodging it?).
+- **`Revise`** regenerates once, told exactly what check failed and why, then always routes to `Finalize`.
+
+This generator+critic pattern, combined with deterministic gates that don't depend on any LLM's self-judgment, catches fabricated citations, off-scope questions, and evasive-but-technically-grounded answers that a single-pass RAG agent would let through — which matters for a compliance/ethics domain where a confident, ungrounded answer is worse than "I don't know."
+
+## Hallucination Defenses
+
+| # | Defense | Node(s) | Type | Catches |
+|---|---|---|---|---|
+| 1 | Retrieval confidence gate | `retrieve` → `abstain` | Deterministic | Out-of-scope questions, before any generation happens |
+| 2 | MMR retrieval | `retrieve` | Retrieval quality | Near-duplicate context that starves the LLM of real coverage |
+| 3 | Citation cross-check | `verify` | Deterministic | A cited source that was never retrieved for this query |
+| 4 | Faithfulness + relevance check | `verify` → `revise` | LLM (independent call) | Fabricated claims, and evasive answers that dodge the actual question |
+
+**Threshold calibration (layer 1):** Chroma's default distance is squared L2 (lower = more similar). Testing this corpus with `all-MiniLM-L6-v2` embeddings found in-scope questions scored 0.43–0.75 and out-of-scope questions scored 1.02–1.78 — a clean separation. `SIMILARITY_THRESHOLD = 0.9` sits in that gap with margin on both sides. A follow-up question with no self-contained meaning (e.g. "give an example of it") would otherwise always score poorly and be wrongly abstained — `retrieve` works around this by prepending the prior assistant turn to the retrieval query (but not to the question passed to `generate`), which is enough context to resolve the reference without an extra LLM call.
+
+**Why not a single check:** an LLM checking its own (or a sibling model's) output is useful but not infallible — testing showed the generator and a naive single verifier could agree on a wrong citation. Layers 1 and 3 are rule-based and don't depend on any model's agreement, so they act as a hard floor under the LLM-based layers 2 and 4.
+
+Every retrieval score and verification verdict is logged via Python's `logging` module, and the Streamlit UI tracks a per-session count of verified/revised/abstained queries — turning "we think hallucinations are rare" into a measured rate.
 
 ## Component Architecture
 
@@ -55,17 +79,18 @@ PDF Files → Text Extraction → Cleaning → Chunking → Embedding → Vector
 
 ### 2. Retrieval System
 
-**Purpose:** Find relevant document chunks based on user queries
+**Purpose:** Find relevant document chunks based on user queries, and produce a confidence signal used to decide whether to answer at all
 
 **Flow:**
 ```
-User Query → Embed Query → Similarity Search → Top-K Chunks → Context Assembly
+User Query → Embed Query → [MMR Search → Top-K Chunks] + [Top-1 Similarity Score] → Context Assembly
 ```
 
 **Components:**
 - **LocalEmbeddings**: Wraps Sentence Transformers for LangChain compatibility
-- **ChromaDB Retriever**: Performs similarity search with TOP_K=4
-- **Context Builder**: Assembles retrieved chunks with source attribution
+- **ChromaDB MMR search**: Retrieves TOP_K=4 chunks balancing relevance and diversity (`fetch_k=20`, `lambda_mult=0.5`)
+- **Confidence score**: A separate plain similarity search (`k=1`) used only to decide whether to abstain — MMR's re-ranked distances aren't a clean relevance signal on their own
+- **Context Builder**: Assembles retrieved chunks with source attribution, and tracks which source names were actually retrieved (used by the citation check)
 
 **Implementation:** `app/streamlit_app.py` (retrieve function)
 
@@ -153,13 +178,21 @@ User Input → Agent State → Retrieve Node → Generate Node → Response
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     context: str
+    draft: str
+    verification: str
+    top_score: float
+    sources_retrieved: list[str]
 ```
 
-**Purpose:** Maintains conversation state and retrieved context
+**Purpose:** Maintains conversation state, retrieved context, and the scratch fields used by the abstain/verify/revise safety layers
 
 **Fields:**
-- `messages`: List of conversation messages (user + assistant)
-- `context`: Retrieved document chunks for current query
+- `messages`: List of conversation messages (user + assistant) — only the *final*, checked answer is appended here, never an intermediate draft
+- `context`: Retrieved document chunks for the current query
+- `draft`: Candidate answer produced by `generate` (or `abstain`), pending the verify step
+- `verification`: `"VALID"`, `"INVALID: <reason>"`, or `"ABSTAINED: <reason>"` — the outcome that decides routing and is logged/surfaced in the UI
+- `top_score`: Confidence of the single best-matching retrieved chunk, used by the abstain gate
+- `sources_retrieved`: Source names actually retrieved for this query, used by the citation cross-check
 
 ### Document Metadata
 
@@ -204,6 +237,8 @@ CONTEXT FROM KNOWLEDGE BASE:
 CHUNK_SIZE = 1400          # Characters per chunk
 CHUNK_OVERLAP = 150        # Overlap between chunks
 TOP_K = 4                  # Chunks retrieved per query
+FETCH_K = 20               # Candidates considered by MMR before diversity re-ranking
+MMR_LAMBDA = 0.5           # 0 = max diversity, 1 = pure relevance
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 COLLECTION_NAME = "ai_ethics_eu"
 ```
@@ -212,7 +247,8 @@ COLLECTION_NAME = "ai_ethics_eu"
 
 ```python
 LLM_MODEL = "llama-3.1-8b-instant"
-TEMPERATURE = 0.2          # Low creativity for factual accuracy
+TEMPERATURE = 0.2                 # Low creativity for factual accuracy
+SIMILARITY_THRESHOLD = 0.9        # Chroma L2 distance; above this, abstain instead of generating
 ```
 
 ### File Structure

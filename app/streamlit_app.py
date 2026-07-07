@@ -5,9 +5,10 @@ A RAG-based conversational agent for European AI ethics and regulation.
 Uses Groq for LLM and local Sentence Transformers for embeddings.
 """
 
+import logging
 import os
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, Optional, TypedDict
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -19,6 +20,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from sentence_transformers import SentenceTransformer
 
+logger = logging.getLogger("ai_ethics_assistant")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 # Configuration
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
@@ -28,6 +33,20 @@ COLLECTION_NAME = "ai_ethics_eu"
 LLM_MODEL = "llama-3.1-8b-instant"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 TOP_K = 4
+FETCH_K = 20            # candidates considered by MMR before diversity re-ranking
+MMR_LAMBDA = 0.5        # 0 = max diversity, 1 = pure relevance
+
+# Chroma's default distance is squared L2 (lower = more similar). Calibrated
+# empirically against this corpus: in-scope questions scored 0.43-0.75,
+# out-of-scope questions scored 1.02-1.78 — a clean gap. 0.9 sits in that
+# gap with margin on both sides. See DECISIONS.md for the calibration data.
+SIMILARITY_THRESHOLD = 0.9
+
+ABSTAIN_MESSAGE = (
+    "I don't have enough information in my knowledge base to answer that. "
+    "Try asking about the EU AI Act, bias and fairness in machine learning, "
+    "or the EU's trustworthy AI guidelines."
+)
 
 SYSTEM_PROMPT = """You are an expert assistant on European AI ethics and regulation.
 
@@ -49,9 +68,16 @@ CONTEXT FROM KNOWLEDGE BASE:
 {context}
 """
 
-VERIFY_PROMPT = """You are a strict compliance reviewer for an AI ethics assistant. Your only \
-job is to check whether a DRAFT ANSWER is fully grounded in the given CONTEXT — no invented \
-facts, article numbers, or legal claims that aren't directly supported.
+VERIFY_PROMPT = """You are a strict compliance reviewer for an AI ethics assistant. Check the \
+DRAFT ANSWER against two criteria:
+
+1. Faithfulness: every claim is directly supported by the CONTEXT — no invented facts, article \
+numbers, or legal claims that aren't there.
+2. Relevance: the draft actually answers the QUESTION asked, rather than dodging it or drifting \
+onto a related but different topic.
+
+QUESTION:
+{question}
 
 CONTEXT:
 {context}
@@ -59,12 +85,12 @@ CONTEXT:
 DRAFT ANSWER:
 {draft}
 
-Reply with exactly "VALID" if every claim in the draft is directly supported by the context \
-(or the draft correctly states it doesn't have enough information). Otherwise reply with \
-"INVALID: " followed by a one-sentence explanation of the unsupported claim.
+Reply with exactly "VALID" if both criteria are met (or the draft correctly states it doesn't \
+have enough information to answer). Otherwise reply with "INVALID: " followed by a one-sentence \
+explanation, noting whether it's a faithfulness or relevance failure.
 """
 
-REVISE_PROMPT = """Your previous draft failed a groundedness check: {reason}
+REVISE_PROMPT = """Your previous draft failed a review: {reason}
 
 Rewrite the answer to the question below using ONLY the context provided, correcting this \
 issue. If the context doesn't actually support an answer, say so explicitly.
@@ -72,33 +98,62 @@ issue. If the context doesn't actually support an answer, say so explicitly.
 QUESTION: {question}
 """
 
+# Canonical source names (must match metadata["source_name"] from build_vector_store.py) mapped
+# to the distinctive phrases the system prompt encourages the LLM to cite them by. Used as a
+# deterministic backstop alongside the LLM-based verify step: if the draft cites a source by name
+# but that source isn't among what was actually retrieved, that's a citation hallucination no
+# LLM self-check is needed to catch.
+SOURCE_CITATION_KEYWORDS = {
+    "EU AI Act": ["EU AI Act"],
+    "Bias & Fairness Survey (Mehrabi et al.)": ["Mehrabi"],
+    "EP Study: Ethics of AI": ["European Parliament study", "Issues and Initiatives"],
+    "Ethics Guidelines for Trustworthy AI": [
+        "AI HLEG",
+        "Ethics Guidelines for Trustworthy AI",
+        "Trustworthy AI Guidelines",
+    ],
+}
+
+
+def check_citations(draft: str, retrieved_sources: list[str]) -> Optional[str]:
+    """Deterministic backstop: flag a source the draft cites that wasn't actually retrieved."""
+    for source_name, keywords in SOURCE_CITATION_KEYWORDS.items():
+        if any(kw in draft for kw in keywords) and source_name not in retrieved_sources:
+            return (
+                f"cites '{source_name}' but it was not among the retrieved sources "
+                f"({', '.join(retrieved_sources) or 'none'})"
+            )
+    return None
+
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     context: str
     draft: str
     verification: str
+    top_score: float
+    sources_retrieved: list[str]
 
 
 class LocalEmbeddings:
     """Local sentence-transformers embeddings wrapper for LangChain compatibility."""
-    
+
     def __init__(self, model_name: str):
         self.model = SentenceTransformer(model_name)
-    
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self.model.encode(texts, show_progress_bar=False).tolist()
-    
+
     def embed_query(self, text: str) -> list[float]:
         return self.model.encode(text, show_progress_bar=False).tolist()
 
 
 def load_agent():
     """Initialize and return the RAG agent with vector store and LLM."""
-    
+
     if not os.getenv("GROQ_API_KEY"):
         raise RuntimeError("GROQ_API_KEY not found — check your .env file")
-    
+
     if not Path(CHROMA_DIR).exists():
         raise RuntimeError(
             "Vector store not found. Run 'python build_vector_store.py' first."
@@ -111,20 +166,57 @@ def load_agent():
         embedding_function=embeddings,
         persist_directory=CHROMA_DIR,
     )
-    retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
-    
+
     # Initialize LLM
     llm = ChatGroq(model=LLM_MODEL, temperature=0.2)
 
     # Define agent nodes
     def retrieve(state: AgentState) -> dict:
-        """Retrieve relevant documents from vector store."""
+        """Retrieve relevant documents, using MMR for diversity and plain similarity for a
+        confidence score (MMR re-ranks for diversity, so its distances aren't a clean
+        relevance signal — a separate top-1 lookup gives us that)."""
         question = state["messages"][-1].content
-        docs = retriever.invoke(question)
+
+        # A bare follow-up like "give an example of it" has no semantic content on its
+        # own and always scores poorly, which would wrongly trigger abstention on every
+        # pronoun-referencing follow-up. Prepend the prior assistant answer (if any) to
+        # give retrieval enough context to resolve it — generate() still sees the raw
+        # question via the full message history, so this only affects retrieval.
+        retrieval_query = question
+        for msg in reversed(state["messages"][:-1]):
+            if isinstance(msg, AIMessage):
+                retrieval_query = f"{msg.content}\n\n{question}"
+                break
+
+        top_hit = vectorstore.similarity_search_with_score(retrieval_query, k=1)
+        top_score = top_hit[0][1] if top_hit else float("inf")
+
+        docs = vectorstore.max_marginal_relevance_search(
+            retrieval_query, k=TOP_K, fetch_k=FETCH_K, lambda_mult=MMR_LAMBDA
+        )
         context = "\n\n---\n\n".join(
             f"[Source: {d.metadata['source_name']}]\n{d.page_content}" for d in docs
         )
-        return {"context": context}
+        sources_retrieved = sorted({d.metadata["source_name"] for d in docs})
+        logger.info("retrieve: top_score=%.4f sources=%s", top_score, sources_retrieved)
+        return {"context": context, "top_score": top_score, "sources_retrieved": sources_retrieved}
+
+    def route_after_retrieve(state: AgentState) -> Literal["generate", "abstain"]:
+        return "abstain" if state["top_score"] > SIMILARITY_THRESHOLD else "generate"
+
+    def abstain(state: AgentState) -> dict:
+        """No retrieved chunk is confident enough to answer from — refuse deterministically
+        instead of letting the LLM decide whether it knows enough."""
+        logger.info(
+            "abstain: top_score=%.4f exceeds threshold=%.2f", state["top_score"], SIMILARITY_THRESHOLD
+        )
+        return {
+            "draft": ABSTAIN_MESSAGE,
+            "verification": (
+                f"ABSTAINED: retrieval confidence too low "
+                f"(top score {state['top_score']:.2f} > threshold {SIMILARITY_THRESHOLD})"
+            ),
+        }
 
     def generate(state: AgentState) -> dict:
         """Generate a draft response using the LLM with retrieved context."""
@@ -133,10 +225,19 @@ def load_agent():
         return {"draft": response.content}
 
     def verify(state: AgentState) -> dict:
-        """Supervisor check: is the draft fully grounded in the retrieved context?"""
-        check = VERIFY_PROMPT.format(context=state["context"], draft=state["draft"])
+        """Supervisor check: a deterministic citation check first, then an LLM check for
+        faithfulness and relevance if the citation check passes."""
+        citation_issue = check_citations(state["draft"], state["sources_retrieved"])
+        if citation_issue:
+            logger.info("verify: citation check failed: %s", citation_issue)
+            return {"verification": f"INVALID: {citation_issue}"}
+
+        question = state["messages"][-1].content
+        check = VERIFY_PROMPT.format(question=question, context=state["context"], draft=state["draft"])
         result = llm.invoke([HumanMessage(content=check)])
-        return {"verification": result.content.strip()}
+        verdict = result.content.strip()
+        logger.info("verify: %s", verdict)
+        return {"verification": verdict}
 
     def route_after_verify(state: AgentState) -> Literal["finalize", "revise"]:
         return "finalize" if state["verification"].upper().startswith("VALID") else "revise"
@@ -152,20 +253,23 @@ def load_agent():
         return {"draft": response.content}
 
     def finalize(state: AgentState) -> dict:
-        """Commit the (possibly revised) draft as the agent's final answer."""
+        """Commit the (possibly revised, possibly abstained) draft as the final answer."""
         return {"messages": [AIMessage(content=state["draft"])]}
 
-    # Build agent graph: retrieve -> generate -> verify -> [finalize | revise -> finalize]
+    # Build agent graph:
+    #   retrieve -> [abstain | generate -> verify -> [finalize | revise]] -> finalize
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("retrieve", retrieve)
+    graph_builder.add_node("abstain", abstain)
     graph_builder.add_node("generate", generate)
     graph_builder.add_node("verify", verify)
     graph_builder.add_node("revise", revise)
     graph_builder.add_node("finalize", finalize)
     graph_builder.add_edge(START, "retrieve")
-    graph_builder.add_edge("retrieve", "generate")
+    graph_builder.add_conditional_edges("retrieve", route_after_retrieve)
     graph_builder.add_edge("generate", "verify")
     graph_builder.add_conditional_edges("verify", route_after_verify)
+    graph_builder.add_edge("abstain", "finalize")
     graph_builder.add_edge("revise", "finalize")
     graph_builder.add_edge("finalize", END)
 
@@ -174,14 +278,14 @@ def load_agent():
 
 def main():
     """Main Streamlit application."""
-    
+
     # Page configuration
     st.set_page_config(
         page_title="AI Ethics Assistant",
         page_icon="⚖️",
         layout="centered"
     )
-    
+
     st.title("⚖️ AI Ethics Assistant")
     st.caption(
         "Expert on European AI ethics & regulation — grounded in the EU AI Act, "
@@ -195,9 +299,11 @@ def main():
         st.error(str(exc))
         st.stop()
 
-    # Initialize chat history
+    # Initialize chat history and reliability stats
     if "history" not in st.session_state:
         st.session_state.history = []
+    if "stats" not in st.session_state:
+        st.session_state.stats = {"total": 0, "verified": 0, "revised": 0, "abstained": 0}
 
     # Display chat history
     for role, text in st.session_state.history:
@@ -206,23 +312,45 @@ def main():
     # Handle user input
     if question := st.chat_input("Ask about the EU AI Act, bias, trustworthy AI..."):
         st.chat_message("user").write(question)
-        
+
         # Generate response
         result = agent.invoke(
             {"messages": [HumanMessage(content=question)]},
             config={"configurable": {"thread_id": "streamlit-session"}},
         )
         answer = result["messages"][-1].content
-        verified = result.get("verification", "").upper().startswith("VALID")
+        verification = result.get("verification", "").upper()
+
+        stats = st.session_state.stats
+        stats["total"] += 1
+        if verification.startswith("ABSTAINED"):
+            stats["abstained"] += 1
+            badge = "🚫 Abstained — retrieval confidence too low for this question"
+        elif verification.startswith("VALID"):
+            stats["verified"] += 1
+            badge = "✅ Verified as grounded in the knowledge base"
+        else:
+            stats["revised"] += 1
+            badge = "🔁 Revised after failing a groundedness/relevance check"
 
         # Display response and update history
         with st.chat_message("assistant"):
             st.write(answer)
-            if verified:
-                st.caption("✅ Verified as grounded in the knowledge base")
-            else:
-                st.caption("🔁 Revised after a groundedness check")
+            st.caption(badge)
         st.session_state.history += [("user", question), ("assistant", answer)]
+
+    # Session reliability stats — a live, measurable view of how often the
+    # supervisor had to intervene, rather than an anecdotal "it seems fine".
+    with st.sidebar:
+        st.subheader("📊 Session Reliability")
+        stats = st.session_state.stats
+        if stats["total"]:
+            st.metric("Questions asked", stats["total"])
+            st.metric("Verified first try", f"{stats['verified']} ({stats['verified'] / stats['total'] * 100:.0f}%)")
+            st.metric("Revised after check", stats["revised"])
+            st.metric("Abstained (low confidence)", stats["abstained"])
+        else:
+            st.caption("Ask a question to see reliability stats for this session.")
 
 
 if __name__ == "__main__":
