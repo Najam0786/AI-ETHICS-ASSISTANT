@@ -1,0 +1,12 @@
+langchain
+langchain-google-genai
+langchain-chroma
+langchain-community
+langchain-text-splitters
+langgraph
+chromadb
+google-api-core
+pypdf
+python-dotenv
+jupyter
+streamlit
