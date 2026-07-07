@@ -79,6 +79,11 @@ This document records key architectural and implementation decisions for the AI 
 - **Gradio**: Less flexible for custom UIs, limited customization options
 - **Streamlit**: Python-native (no frontend skills needed), built-in chat interface, rapid development, free hosting on Streamlit Cloud, excellent for ML/AI demos
 
+| # | Decision | Alternatives Considered | Rationale |
+|---|---|---|---|
+| 34 | Custom theme + CSS injection (`.streamlit/config.toml` + `st.markdown` styles) instead of Streamlit defaults | Default Streamlit theme; a full custom component/iframe; switching frameworks | Streamlit's default look is generic and reads as an internal tool rather than a polished product. A custom theme (indigo/violet palette) plus targeted CSS (gradient hero title, status pills, styled sidebar cards, suggested-question chips) gets most of a custom frontend's visual polish for a few dozen lines of CSS, no build step, and no framework migration — consistent with the project's "fast, simple, free" constraints. Verified by actually launching the app and clicking through it in a browser, not just reading the code. |
+| 35 | Suggested-question chips that call the same `ask_agent()` path as manual chat input | A separate/duplicated code path for button-triggered questions | Avoids two divergent implementations of "run a question through the agent and update state" — chat input and chips both call one shared function, so stats, badges, and history stay consistent regardless of how the question was asked. |
+
 ## System Design
 
 | # | Decision | Alternatives Considered | Rationale |

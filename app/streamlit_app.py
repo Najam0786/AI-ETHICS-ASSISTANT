@@ -254,6 +254,145 @@ def load_agent():
     return graph_builder.compile(checkpointer=MemorySaver())
 
 
+USER_AVATAR = "🧑‍💻"
+ASSISTANT_AVATAR = "⚖️"
+
+SUGGESTED_QUESTIONS = [
+    ("⚖️", "High-risk AI systems", "What is considered a high-risk AI system under the EU AI Act?"),
+    ("📊", "Bias & fairness", "What are the main types of bias in machine learning?"),
+    ("✅", "Trustworthy AI", "What are the seven requirements for trustworthy AI?"),
+    ("🏥", "AI in healthcare", "What ethical concerns does AI raise in healthcare?"),
+]
+
+CUSTOM_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"]  { font-family: 'Inter', sans-serif; }
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+
+.hero {
+    text-align: center;
+    padding: 1.75rem 1rem 1.25rem 1rem;
+    margin-bottom: 0.5rem;
+}
+.hero h1 {
+    font-size: 2.4rem;
+    font-weight: 800;
+    margin-bottom: 0.25rem;
+    background: linear-gradient(135deg, #4338CA 0%, #7C3AED 55%, #C026D3 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.hero p {
+    color: #6B7280;
+    font-size: 1.02rem;
+    max-width: 640px;
+    margin: 0 auto;
+}
+.badge-row {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.9rem;
+}
+.pill {
+    display: inline-block;
+    padding: 0.28rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: #F5F3FF;
+    color: #5B21B6;
+    border: 1px solid #E9D5FF;
+}
+
+.status-pill {
+    display: inline-block;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+.status-verified { background: #ECFDF5; color: #047857; border: 1px solid #A7F3D0; }
+.status-revised   { background: #FFFBEB; color: #B45309; border: 1px solid #FDE68A; }
+
+[data-testid="stChatMessage"] {
+    border-radius: 16px;
+    padding: 0.4rem 0.2rem;
+    margin-bottom: 0.35rem;
+}
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #F5F3FF 0%, #FFFFFF 45%);
+}
+section[data-testid="stSidebar"] .stMetric {
+    background: #FFFFFF;
+    border-radius: 12px;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid #EDE9FE;
+    box-shadow: 0 1px 2px rgba(76, 29, 149, 0.06);
+}
+
+div[data-testid="stButton"] button {
+    border-radius: 10px;
+    border: 1px solid #E9D5FF;
+    background: #FFFFFF;
+    color: #4338CA;
+    font-weight: 600;
+    transition: all 0.15s ease;
+}
+div[data-testid="stButton"] button:hover {
+    background: #F5F3FF;
+    border-color: #C4B5FD;
+    color: #5B21B6;
+}
+</style>
+"""
+
+
+def render_status_badge(verification: str) -> str:
+    """Return an HTML pill summarizing the supervisor's verdict for one answer."""
+    if verification.upper().startswith("VALID"):
+        return '<span class="status-pill status-verified">✅ Verified as grounded in the knowledge base</span>'
+    return '<span class="status-pill status-revised">🔁 Revised after failing a groundedness/relevance check</span>'
+
+
+def ask_agent(agent, question: str) -> None:
+    """Run one question through the agent, render it, and update session state."""
+    st.chat_message("user", avatar=USER_AVATAR).write(question)
+
+    with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
+        with st.spinner("🤔 Checking the EU AI Act, bias research, and trustworthy AI guidelines..."):
+            result = agent.invoke(
+                {"messages": [HumanMessage(content=question)]},
+                config={"configurable": {"thread_id": "streamlit-session"}},
+            )
+        answer = result["messages"][-1].content
+        verification = result.get("verification", "")
+
+        stats = st.session_state.stats
+        stats["total"] += 1
+        if verification.upper().startswith("VALID"):
+            stats["verified"] += 1
+        else:
+            stats["revised"] += 1
+        if result.get("top_score", 0) > LOW_CONFIDENCE_LOG_THRESHOLD:
+            stats["low_confidence"] += 1
+
+        st.write(answer)
+        st.markdown(render_status_badge(verification), unsafe_allow_html=True)
+
+    st.session_state.history += [
+        {"role": "user", "text": question, "badge": None},
+        {"role": "assistant", "text": answer, "badge": render_status_badge(verification)},
+    ]
+
+
 def main():
     """Main Streamlit application."""
 
@@ -261,13 +400,25 @@ def main():
     st.set_page_config(
         page_title="AI Ethics Assistant",
         page_icon="⚖️",
-        layout="centered"
+        layout="centered",
     )
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-    st.title("⚖️ AI Ethics Assistant")
-    st.caption(
-        "Expert on European AI ethics & regulation — grounded in the EU AI Act, "
-        "EU ethics guidelines and academic research."
+    st.markdown(
+        """
+        <div class="hero">
+            <h1>⚖️ AI Ethics Assistant</h1>
+            <p>Expert on European AI ethics & regulation — grounded in the EU AI Act,
+            EU ethics guidelines and academic research.</p>
+            <div class="badge-row">
+                <span class="pill">🧠 LangGraph Agent</span>
+                <span class="pill">🛡️ Self-Verifying</span>
+                <span class="pill">⚡ Groq-Powered</span>
+                <span class="pill">🆓 Free & Open Source</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     # Load agent with error handling
@@ -283,43 +434,31 @@ def main():
     if "stats" not in st.session_state:
         st.session_state.stats = {"total": 0, "verified": 0, "revised": 0, "low_confidence": 0}
 
-    # Display chat history
-    for role, text in st.session_state.history:
-        st.chat_message(role).write(text)
+    # Suggested-question chips — only shown before the conversation starts,
+    # so returning users get the full chat history instead of clutter.
+    if not st.session_state.history:
+        st.write("**Try asking:**")
+        cols = st.columns(2)
+        for i, (icon, label, question) in enumerate(SUGGESTED_QUESTIONS):
+            if cols[i % 2].button(f"{icon} {label}", use_container_width=True, key=f"suggest_{i}"):
+                ask_agent(agent, question)
+                st.rerun()
+
+    # Display chat history (with each answer's original verification badge)
+    for msg in st.session_state.history:
+        with st.chat_message(msg["role"], avatar=USER_AVATAR if msg["role"] == "user" else ASSISTANT_AVATAR):
+            st.write(msg["text"])
+            if msg["badge"]:
+                st.markdown(msg["badge"], unsafe_allow_html=True)
 
     # Handle user input
     if question := st.chat_input("Ask about the EU AI Act, bias, trustworthy AI..."):
-        st.chat_message("user").write(question)
-
-        # Generate response
-        result = agent.invoke(
-            {"messages": [HumanMessage(content=question)]},
-            config={"configurable": {"thread_id": "streamlit-session"}},
-        )
-        answer = result["messages"][-1].content
-        verification = result.get("verification", "").upper()
-
-        stats = st.session_state.stats
-        stats["total"] += 1
-        if verification.startswith("VALID"):
-            stats["verified"] += 1
-            badge = "✅ Verified as grounded in the knowledge base"
-        else:
-            stats["revised"] += 1
-            badge = "🔁 Revised after failing a groundedness/relevance check"
-        if result.get("top_score", 0) > LOW_CONFIDENCE_LOG_THRESHOLD:
-            stats["low_confidence"] += 1
-
-        # Display response and update history
-        with st.chat_message("assistant"):
-            st.write(answer)
-            st.caption(badge)
-        st.session_state.history += [("user", question), ("assistant", answer)]
+        ask_agent(agent, question)
 
     # Session reliability stats — a live, measurable view of how often the
     # supervisor had to intervene, rather than an anecdotal "it seems fine".
     with st.sidebar:
-        st.subheader("📊 Session Reliability")
+        st.markdown("### 📊 Session Reliability")
         stats = st.session_state.stats
         if stats["total"]:
             st.metric("Questions asked", stats["total"])
@@ -328,6 +467,20 @@ def main():
             st.metric("Low retrieval confidence", stats["low_confidence"])
         else:
             st.caption("Ask a question to see reliability stats for this session.")
+
+        st.divider()
+        with st.expander("ℹ️ About this assistant"):
+            st.markdown(
+                "- **LLM:** Groq (`llama-3.1-8b-instant`)\n"
+                "- **Embeddings:** local Sentence Transformers\n"
+                "- **Vector store:** ChromaDB (758 chunks)\n"
+                "- **Agent:** LangGraph — retrieve → generate → verify → revise\n"
+                "- **Sources:** EU AI Act, Bias & Fairness Survey (Mehrabi et al.), "
+                "EP Ethics of AI study, EU Trustworthy AI Guidelines"
+            )
+            st.markdown(
+                "[📦 Source on GitHub](https://github.com/Najam0786/AI-ETHICS-ASSISTANT)"
+            )
 
 
 if __name__ == "__main__":
