@@ -1,12 +1,25 @@
-langchain
-langchain-google-genai
-langchain-chroma
-langchain-community
-langchain-text-splitters
-langgraph
-chromadb
-google-api-core
-pypdf
-python-dotenv
-jupyter
-streamlit
+# Core dependencies
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-chroma>=0.2.0
+langchain-text-splitters>=0.3.0
+langchain-groq>=0.3.0
+langgraph>=0.6.0
+
+# Vector database
+chromadb>=0.5.0
+
+# Document processing
+pypdf>=6.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Embeddings (local)
+sentence-transformers>=3.0.0
+
+# Web interface
+streamlit>=1.40.0
+
+# Development tools
+jupyter>=1.1.0

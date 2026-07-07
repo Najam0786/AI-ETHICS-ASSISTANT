@@ -1,0 +1,3 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}\\ai_ethics\\Scripts\\python.exe"
+}

@@ -1,3 +1,10 @@
+"""
+AI Ethics Assistant - Streamlit Web Interface
+
+A RAG-based conversational agent for European AI ethics and regulation.
+Uses Groq for LLM and local Sentence Transformers for embeddings.
+"""
+
 import os
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -5,20 +12,21 @@ from typing import Annotated, TypedDict
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_groq import ChatGroq
 from langchain_chroma import Chroma
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from sentence_transformers import SentenceTransformer
 
+# Configuration
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 CHROMA_DIR = str(ROOT_DIR / "chroma_db")
 COLLECTION_NAME = "ai_ethics_eu"
-
-LLM_MODEL = "gemini-2.5-flash"
-EMBEDDING_MODEL = "models/gemini-embedding-001"
+LLM_MODEL = "llama-3.1-8b-instant"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 TOP_K = 4
 
 SYSTEM_PROMPT = """You are an expert assistant on European AI ethics and regulation.
@@ -47,34 +55,45 @@ class AgentState(TypedDict):
     context: str
 
 
-st.set_page_config(page_title="AI Ethics Assistant 🇪🇺", page_icon="⚖️")
-st.title("⚖️ AI Ethics Assistant")
-st.caption(
-    "Expert on European AI ethics & regulation — grounded in the EU AI Act, "
-    "EU ethics guidelines and academic research."
-)
+class LocalEmbeddings:
+    """Local sentence-transformers embeddings wrapper for LangChain compatibility."""
+    
+    def __init__(self, model_name: str):
+        self.model = SentenceTransformer(model_name)
+    
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.model.encode(texts, show_progress_bar=False).tolist()
+    
+    def embed_query(self, text: str) -> list[float]:
+        return self.model.encode(text, show_progress_bar=False).tolist()
 
 
-@st.cache_resource
 def load_agent():
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise RuntimeError("GOOGLE_API_KEY not found — check your .env file")
+    """Initialize and return the RAG agent with vector store and LLM."""
+    
+    if not os.getenv("GROQ_API_KEY"):
+        raise RuntimeError("GROQ_API_KEY not found — check your .env file")
+    
     if not Path(CHROMA_DIR).exists():
         raise RuntimeError(
-            "Vector store not found. Run the notebook (notebooks/ai_ethics_assistant.ipynb) "
-            "once first to build chroma_db/."
+            "Vector store not found. Run 'python build_vector_store.py' first."
         )
 
-    embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+    # Initialize embeddings and vector store
+    embeddings = LocalEmbeddings(EMBEDDING_MODEL)
     vectorstore = Chroma(
         collection_name=COLLECTION_NAME,
         embedding_function=embeddings,
         persist_directory=CHROMA_DIR,
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": TOP_K})
-    llm = ChatGoogleGenerativeAI(model=LLM_MODEL, temperature=0.2)
+    
+    # Initialize LLM
+    llm = ChatGroq(model=LLM_MODEL, temperature=0.2)
 
+    # Define agent nodes
     def retrieve(state: AgentState) -> dict:
+        """Retrieve relevant documents from vector store."""
         question = state["messages"][-1].content
         docs = retriever.invoke(question)
         context = "\n\n---\n\n".join(
@@ -83,10 +102,12 @@ def load_agent():
         return {"context": context}
 
     def generate(state: AgentState) -> dict:
+        """Generate response using LLM with retrieved context."""
         system = SystemMessage(content=SYSTEM_PROMPT.format(context=state["context"]))
         response = llm.invoke([system] + state["messages"])
         return {"messages": [response]}
 
+    # Build agent graph
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("retrieve", retrieve)
     graph_builder.add_node("generate", generate)
@@ -97,24 +118,52 @@ def load_agent():
     return graph_builder.compile(checkpointer=MemorySaver())
 
 
-try:
-    agent = load_agent()
-except RuntimeError as exc:
-    st.error(str(exc))
-    st.stop()
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-for role, text in st.session_state.history:
-    st.chat_message(role).write(text)
-
-if question := st.chat_input("Ask about the EU AI Act, bias, trustworthy AI..."):
-    st.chat_message("user").write(question)
-    result = agent.invoke(
-        {"messages": [HumanMessage(content=question)]},
-        config={"configurable": {"thread_id": "streamlit-session"}},
+def main():
+    """Main Streamlit application."""
+    
+    # Page configuration
+    st.set_page_config(
+        page_title="AI Ethics Assistant",
+        page_icon="⚖️",
+        layout="centered"
     )
-    answer = result["messages"][-1].content
-    st.chat_message("assistant").write(answer)
-    st.session_state.history += [("user", question), ("assistant", answer)]
+    
+    st.title("⚖️ AI Ethics Assistant")
+    st.caption(
+        "Expert on European AI ethics & regulation — grounded in the EU AI Act, "
+        "EU ethics guidelines and academic research."
+    )
+
+    # Load agent with error handling
+    try:
+        agent = load_agent()
+    except RuntimeError as exc:
+        st.error(str(exc))
+        st.stop()
+
+    # Initialize chat history
+    if "history" not in st.session_state:
+        st.session_state.history = []
+
+    # Display chat history
+    for role, text in st.session_state.history:
+        st.chat_message(role).write(text)
+
+    # Handle user input
+    if question := st.chat_input("Ask about the EU AI Act, bias, trustworthy AI..."):
+        st.chat_message("user").write(question)
+        
+        # Generate response
+        result = agent.invoke(
+            {"messages": [HumanMessage(content=question)]},
+            config={"configurable": {"thread_id": "streamlit-session"}},
+        )
+        answer = result["messages"][-1].content
+        
+        # Display response and update history
+        st.chat_message("assistant").write(answer)
+        st.session_state.history += [("user", question), ("assistant", answer)]
+
+
+if __name__ == "__main__":
+    main()
