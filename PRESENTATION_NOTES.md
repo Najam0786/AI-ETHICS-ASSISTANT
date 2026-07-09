@@ -48,10 +48,14 @@ User question → Retrieve (MMR) → Generate → Verify → [Finalize | Revise]
 ```
 
 - **Retrieve**: MMR search (`fetch_k=20`, `k=4`) — diverse chunks, not
-  near-duplicates of the same passage.
-- **Generate**: Groq drafts an answer strictly from the retrieved context.
-- **Verify**: a second, independent LLM call — the supervisor — checks the
-  draft before it's ever shown to the user.
+  near-duplicates of the same passage — topped up with plain top-k
+  similarity, a bare-question search, and a keyword lookup for exact
+  article citations (see §7b — these were added after live testing).
+- **Generate**: Groq (`llama-3.1-8b-instant`) drafts an answer strictly from
+  the retrieved context.
+- **Verify**: a second, independent LLM call on a *stronger* model
+  (`llama-3.3-70b-versatile`) — the supervisor — checks the draft before
+  it's ever shown to the user.
 - **Revise**: only runs if verification fails; regenerates once with the
   specific problem called out.
 - **Memory**: LangGraph's `MemorySaver`, keyed by thread ID, so follow-up
@@ -66,7 +70,8 @@ LLM call with a good prompt.
 
 | Layer | Choice | One-line why |
 |---|---|---|
-| LLM | Groq `llama-3.1-8b-instant` | Free, fast, no rate limits |
+| LLM (generation) | Groq `llama-3.1-8b-instant` | Free, fast, no rate limits |
+| LLM (verification) | Groq `llama-3.3-70b-versatile` | Stronger, independent judge of the fast model's drafts |
 | Embeddings | Sentence Transformers `all-MiniLM-L6-v2` | Local, zero cost, no quota |
 | Vector store | ChromaDB | Open-source, persistent, simple |
 | Agent framework | LangGraph | Stateful graph + built-in memory |
@@ -76,7 +81,7 @@ LLM call with a good prompt.
 
 > "The assignment brief specifies Gemini for the LLM and embeddings, and
 > that's actually what I started with. Gemini's free tier caps embeddings
-> at 1,000 requests/day and 100/minute — for a 758-chunk knowledge base,
+> at 1,000 requests/day and 100/minute — for a 641-chunk knowledge base,
 > that quota blocked me repeatedly during development. I made a deliberate
 > call to migrate to Groq for the LLM and local Sentence Transformers for
 > embeddings — both genuinely free with no rate limits. The RAG
@@ -162,6 +167,51 @@ this is a good story about engineering rigor:**
 
 ---
 
+## 7b. Post-Deployment Hardening — a live-testing story worth telling
+
+**This is a strong section if the rubric rewards process, not just a final
+demo.** After deploying, real usage (not synthetic test questions) surfaced
+a failure class the three defenses above didn't cover: the supervisor was
+correctly checking the draft against whatever context `retrieve` handed it —
+but sometimes `retrieve` handed it the *wrong* context, so a well-verified
+answer still came back "I don't have enough information," even though the
+knowledge base genuinely had the answer.
+
+> "After I deployed this, I didn't just call it done — I actually used it
+> like a real user would, asked it questions from the source PDFs, and
+> found six distinct retrieval bugs that a synthetic test set wouldn't have
+> caught. Each one I root-caused with direct pipeline tests before fixing
+> it — comparing retrieval scores and results before and after — the same
+> evidence-based approach as the confidence-gate story."
+
+The six, briefly (full data in DECISIONS.md #38–43):
+
+1. **Weak verifier** — the fast 8B model judging its own drafts hallucinated
+   a faithfulness failure on text that was verbatim in the context. Fixed
+   with a separate, stronger judge model.
+2. **Follow-up topic hijacking** — asking about a new case study right
+   after a different one skewed retrieval toward the *old* topic. Fixed by
+   also searching the bare question and merging results.
+3. **MMR dropping the best match** — diversity re-ranking excluded the
+   single most relevant chunk in favor of a "diverse" but worse one. Fixed
+   with a plain top-k similarity floor under MMR.
+4. **Bibliography noise** — ~20% of some source PDFs are citation lists
+   that share vocabulary with real questions but have no real answer, and
+   MMR kept choosing them. Fixed by excluding References sections at
+   ingestion (758 → 641 chunks).
+5. **Article-number queries** — "What is Article 10?" embeds too poorly to
+   retrieve by similarity alone. Fixed with a deterministic keyword lookup.
+6. **Typo sensitivity** — "Autonomus Vechicle" wrecked retrieval scores.
+   Fixed with a cheap LLM call that normalizes spelling before embedding.
+
+**Why this is worth mentioning even though none of it is in the original
+demo script:** it's evidence the reliability claims in §7 aren't just
+theoretical — they were pressure-tested against real questions, and when
+real usage broke something, it was diagnosed and fixed with data, not
+patched blindly.
+
+---
+
 ## 8. Reliability Results (show the sidebar live)
 
 During testing, the supervisor caught and corrected real cases:
@@ -199,11 +249,11 @@ Ask these in order — each hits a specific rubric point:
 
 | Criterion | Status |
 |---|---|
-| Base de conocimiento (Chroma + Embeddings) | ✅ 758 chunks, correctly indexed — embeddings are Sentence Transformers, not Gemini (see §4) |
+| Base de conocimiento (Chroma + Embeddings) | ✅ 641 chunks, correctly indexed — embeddings are Sentence Transformers, not Gemini (see §4) |
 | RAG (recuperación + generación) | ✅ precise retrieval, coherent cited answers — LLM is Groq, not Gemini (see §4) |
 | Ingeniería de Prompts | ✅ justified in README/ARCHITECTURE, 6 explicit rules |
 | Agente con memoria (LangGraph) | ✅ functional, demonstrated live across 3 turns |
-| Calidad de código y documentación | ✅ README, ARCHITECTURE.md, DECISIONS.md (37 logged decisions) |
+| Calidad de código y documentación | ✅ README, ARCHITECTURE.md, DECISIONS.md (43 logged decisions), REVIEW.md |
 | Presentación y demo | This document + live app |
 | Bonus: Streamlit | ✅ deployed publicly, polished UI |
 

@@ -55,10 +55,10 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 1. **Ingest** — PDFs parsed with PyPDFLoader
 2. **Clean & chunk** — normalized text split into 1,400-char chunks (150-char overlap)
 3. **Embed** — Sentence Transformers (`all-MiniLM-L6-v2`), fully local
-4. **Store** — ChromaDB, persisted to disk (758 chunks)
-5. **Retrieve** — MMR search for 4 diverse relevant chunks, plus a separate top-1 similarity score logged as a confidence signal (see [Hallucination Defenses](#hallucination-defenses) for why this isn't used to block answers)
+4. **Store** — ChromaDB, persisted to disk (641 chunks; each source's References/Bibliography section is dropped at ingestion — see [Hallucination Defenses](#hallucination-defenses))
+5. **Retrieve** — MMR search for 4 diverse relevant chunks, topped up with plain top-k similarity results (a floor under MMR's diversity trade-off), a bare-question search alongside any conversational-context search, and a deterministic keyword lookup for exact article citations — plus a separate top-1 similarity score logged as a confidence signal
 6. **Generate** — Groq (`llama-3.1-8b-instant`) drafts an answer strictly from retrieved context
-7. **Verify** — a deterministic citation check, then a second Groq call checking faithfulness *and* relevance
+7. **Verify** — a deterministic citation check, then a second, independent Groq call on a stronger model (`llama-3.3-70b-versatile`) checking faithfulness *and* relevance
 8. **Revise** *(only if the check fails)* — regenerates the answer, told exactly what was wrong
 9. **Remember** — LangGraph `MemorySaver` keeps conversation state across turns
 
@@ -74,9 +74,24 @@ The EU AI Act and its supporting frameworks run to **~250 pages of dense legal a
 |---|---|---|---|
 | 1 | **MMR retrieval** (vs. plain top-k similarity) | Retrieval quality | Near-duplicate chunks crowding out genuinely diverse context, which pushes the LLM to "fill gaps" with invented detail |
 | 2 | **Deterministic citation cross-check** | Rule-based, zero LLM calls in the common case | A cited source that was never actually retrieved — checked by plain string matching before any LLM judges the draft |
-| 3 | **Supervisor LLM check (faithfulness *and* relevance)** | Second independent Groq call | Fabricated claims not in context (faithfulness), *and* answers that are technically grounded but dodge the actual question (relevance) — faithfulness alone can pass an evasive non-answer |
+| 3 | **Supervisor LLM check (faithfulness *and* relevance)**, on a stronger model (`llama-3.3-70b-versatile`) than generation | Second independent Groq call | Fabricated claims not in context (faithfulness), *and* answers that are technically grounded but dodge the actual question (relevance) — faithfulness alone can pass an evasive non-answer |
 
 **A fourth layer was tried and removed:** a hard pre-generation gate that abstained whenever retrieval confidence exceeded a calibrated threshold, so obviously out-of-scope questions never reached the LLM at all. It worked for clean cases, but real usage exposed a problem: a typo as small as *"Bais"* instead of *"bias"* scored **worse** than several genuinely out-of-scope test questions — no threshold could separate "typo of a real topic" from "actually irrelevant" using embedding similarity alone, so the gate was blocking legitimate questions. Since `generate → verify` was already proven to correctly handle genuinely out-of-scope questions on its own, the gate added real risk (false refusals) for no safety benefit, so it was removed. The retrieval score is still computed and logged for observability, just no longer used to block generation. Full before/after data in [DECISIONS.md](DECISIONS.md#hallucination-defenses).
+
+### Retrieval-quality fixes found through live testing
+
+Live use surfaced several cases where the *answer* was correctly refused as "not enough information" — but the knowledge base actually had the answer, and the failure was upstream in retrieval, not in the verifier. Each was root-caused with direct pipeline testing (not guessed at) and fixed:
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| A follow-up naming a brand-new topic (e.g. a different case study) got answered using the *previous* topic's content | Prepending the prior conversational turn to the retrieval query — meant to help pronoun-style follow-ups — hijacked retrieval for follow-ups that actually named their own fully-specified topic | Also retrieve on the bare current-turn question and merge results in |
+| A clearly relevant chunk was excluded even though it plainly matched | MMR's diversity trade-off dropped the single best match for a "diverse" but less relevant one, confirmed at multiple `lambda_mult` values | Merge in plain top-k similarity results as a floor under MMR's picks |
+| Up to ~20% of some source PDFs (citation lists) were being retrieved over genuinely relevant content | Bibliography entries share surface vocabulary ("autonomous vehicles", "AI") with real questions without containing any real answer | Exclude each document's References/Bibliography section at ingestion |
+| "What is Article 10?" failed even though the article is discussed in the source | Short, numeric-citation queries embed poorly with `all-MiniLM-L6-v2` — none of the top-30 similarity results contained the literal text | Deterministic keyword lookup for exact "Article N" citations |
+| A typo ("Autonomus Vechicle") returned "not enough information" | The typo alone degraded retrieval scores from ~0.96 to ~1.5, and the correct chunk vanished from the results | One cheap LLM call normalizes obvious spelling errors before embedding |
+| The same small model judged its own drafts and hallucinated a "faithfulness" failure on text that was actually verbatim in the context | A fast/small model is a good drafter but an unreliable critic of its own paraphrasing | `verify` now uses a separate, stronger model than `generate` |
+
+Full root-cause data and alternatives considered for each: [DECISIONS.md](DECISIONS.md#hallucination-defenses) (decisions #38–43).
 
 Every retrieval score and verification verdict is logged, and the Streamlit sidebar shows a live **Session Reliability** panel — verified/revised counts and a low-confidence tally — so reliability is a measured number, not an impression.
 
@@ -91,7 +106,7 @@ Every retrieval score and verification verdict is logged, and the Streamlit side
 | **The Ethics of AI: Issues and Initiatives** (European Parliament) | Policy study | 128 | Case studies — health, justice, warfare |
 | **Ethics Guidelines for Trustworthy AI** (AI HLEG) | EU framework | 41 | 7 requirements for trustworthy AI |
 
-**Total: 253 pages** of authoritative source material.
+**Total: 253 pages** of authoritative source material (each document's References/Bibliography section is excluded at ingestion — see [Hallucination Defenses](#hallucination-defenses) — leaving 641 indexed chunks).
 
 ---
 
@@ -99,7 +114,8 @@ Every retrieval score and verification verdict is logged, and the Streamlit side
 
 | Layer | Choice | Why |
 |---|---|---|
-| **LLM** | [Groq](https://groq.com/) — `llama-3.1-8b-instant` | Free, no rate limits, sub-second inference |
+| **LLM (generation)** | [Groq](https://groq.com/) — `llama-3.1-8b-instant` | Free, no rate limits, sub-second inference |
+| **LLM (verification)** | [Groq](https://groq.com/) — `llama-3.3-70b-versatile` | A stronger model as an independent judge of the fast model's drafts — still free |
 | **Embeddings** | [Sentence Transformers](https://www.sbert.net/) — `all-MiniLM-L6-v2` | Runs locally, zero cost, no quotas |
 | **Vector store** | [ChromaDB](https://www.trychroma.com/) | Open-source, persistent, simple LangChain integration |
 | **Agent framework** | [LangGraph](https://www.langchain.com/langgraph) | Stateful graph with built-in conversation memory |
@@ -192,8 +208,8 @@ ai-ethics-assistant/
 
 | Metric | Value |
 |---|---|
-| Vector store build time | ~13s for 758 chunks |
-| Query response time | < 2s |
+| Vector store build time | ~13s for 641 chunks |
+| Query response time | < 3s (one extra Groq call for query normalization, plus a stronger-model verify call) |
 | Storage footprint | ~100MB |
 | Running cost | **$0** |
 

@@ -31,6 +31,25 @@ SOURCES = {
     "trustworthy_ai_guidelines.pdf": "Ethics Guidelines for Trustworthy AI",
 }
 
+# Citation-list text (author names, paper titles, years) shares surface vocabulary
+# with real questions — e.g. bibliography entries mentioning "autonomous vehicles"
+# or "AI" — without containing any substantive answer. Testing found MMR retrieval
+# repeatedly pulling in bibliography chunks as "diverse" alternatives ahead of the
+# actually relevant chunk, degrading answer quality. Three of the four source PDFs
+# have a References/Bibliography section (up to ~20% of total pages); it's dropped
+# at ingestion so it never enters the vector store.
+REFERENCES_HEADING_RE = re.compile(r"^\s*(references|bibliography)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def truncate_at_references(pages: list) -> list:
+    """Cut a document's pages at its References/Bibliography heading, if any."""
+    for i, page in enumerate(pages):
+        match = REFERENCES_HEADING_RE.search(page.page_content)
+        if match:
+            page.page_content = page.page_content[: match.start()]
+            return pages[: i + 1]
+    return pages
+
 
 class LocalEmbeddings:
     """Local sentence-transformers embeddings wrapper for LangChain compatibility."""
@@ -61,8 +80,8 @@ def load_documents() -> list:
     for filename, source_name in SOURCES.items():
         path = os.path.join(DATA_DIR, filename)
         loader = PyPDFLoader(path)
-        pages = loader.load()
-        
+        pages = truncate_at_references(loader.load())
+
         for page in pages:
             page.page_content = clean_text(page.page_content)
             page.metadata["source_name"] = source_name

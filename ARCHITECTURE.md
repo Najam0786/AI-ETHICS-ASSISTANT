@@ -35,8 +35,9 @@ The AI Ethics Assistant is a RAG-based (Retrieval-Augmented Generation) conversa
 
 Three independent checks, not one — see [Hallucination Defenses](#hallucination-defenses) below for why each layer exists, what it catches, and why a fourth layer (a pre-generation confidence gate) was tried and removed:
 
-- **`Retrieve` uses MMR**, not plain top-k similarity, so the 4 chunks handed to the LLM are diverse rather than near-duplicates of each other. It also computes a top-1 similarity score, logged for observability but not used to block generation (see below).
-- **`Verify`** runs a deterministic citation cross-check first (does the draft cite a source that wasn't actually retrieved?), then — only if that passes — a second, independent Groq call checking both faithfulness (is every claim supported by context?) and relevance (does the draft actually answer the question, rather than dodging it?).
+- **`Retrieve`** normalizes obvious typos in the question (one cheap Groq call), then uses MMR (not plain top-k similarity) so the chunks handed to the LLM are diverse rather than near-duplicates of each other — topped up with plain top-k similarity results (a floor under MMR's own diversity trade-off), a bare-question search merged alongside any conversational-context search, and a deterministic keyword lookup for exact article citations. It also computes a top-1 similarity score, logged for observability but not used to block generation (see below).
+- **`Generate`** drafts an answer using the fast model (`llama-3.1-8b-instant`), strictly from the retrieved context.
+- **`Verify`** runs a deterministic citation cross-check first (does the draft cite a source that wasn't actually retrieved?), then — only if that passes — a second, independent Groq call on a *stronger* model (`llama-3.3-70b-versatile`) checking both faithfulness (is every claim supported by context?) and relevance (does the draft actually answer the question, rather than dodging it?). A stronger, separate judge model was needed after testing found the fast model unreliable at critiquing its own paraphrasing.
 - **`Revise`** regenerates once, told exactly what check failed and why, then always routes to `Finalize`.
 
 This generator+critic pattern, combined with a deterministic citation check that doesn't depend on any LLM's self-judgment, catches fabricated citations and evasive-but-technically-grounded answers that a single-pass RAG agent would let through — which matters for a compliance/ethics domain where a confident, ungrounded answer is worse than "I don't know."
@@ -47,7 +48,7 @@ This generator+critic pattern, combined with a deterministic citation check that
 |---|---|---|---|---|
 | 1 | MMR retrieval | `retrieve` | Retrieval quality | Near-duplicate context that starves the LLM of real coverage |
 | 2 | Citation cross-check | `verify` | Deterministic | A cited source that was never retrieved for this query |
-| 3 | Faithfulness + relevance check | `verify` → `revise` | LLM (independent call) | Fabricated claims, and evasive answers that dodge the actual question |
+| 3 | Faithfulness + relevance check, on a stronger model than generation | `verify` → `revise` | LLM (independent call, `llama-3.3-70b-versatile`) | Fabricated claims, and evasive answers that dodge the actual question |
 
 **A fourth layer was tried and removed: a pre-generation retrieval confidence gate.** The idea (`retrieve` → `abstain` if the top-1 similarity score exceeded a calibrated threshold) is a well-documented RAG hallucination mitigation — abstain deterministically, with zero LLM calls, when retrieval finds nothing relevant. Calibration against this corpus with `all-MiniLM-L6-v2` embeddings looked clean: in-scope questions scored 0.43–0.75, out-of-scope questions scored 1.02–1.78, with `SIMILARITY_THRESHOLD = 0.9` sitting in the gap.
 
@@ -56,6 +57,19 @@ It was removed after real usage exposed a failure this calibration set didn't co
 A related fix survived from that work: a bare follow-up question with no self-contained meaning (e.g. "give an example of it") always scores poorly on its own. `retrieve` prepends the prior assistant turn to the *retrieval query* (but not to the question `generate` sees) so pronoun references resolve correctly — this remains in place regardless of the gate's removal, since it improves retrieval quality for follow-ups either way.
 
 **Why not a single check:** an LLM checking its own (or a sibling model's) output is useful but not infallible — testing showed the generator and a naive single verifier could agree on a wrong citation. The citation cross-check (layer 2) is rule-based and doesn't depend on any model's agreement, acting as a hard floor under the LLM-based layer 3.
+
+### Retrieval-quality fixes found through live testing (decisions #38–43)
+
+Live use of the deployed app surfaced a distinct failure class the checks above don't cover: cases where `verify` correctly judged the draft against the context it was given, but `retrieve` had handed it the *wrong* context — so the honest, well-verified answer was still "I don't have enough information," even though the knowledge base actually had the answer. Each was root-caused with direct pipeline tests (comparing retrieval scores/results before and after), not guessed at:
+
+- **Weak verifier model** — the fast 8B model judging its own drafts hallucinated a faithfulness failure on text that was verbatim in the context. Fixed by giving `verify` a separate, stronger model (`llama-3.3-70b-versatile`).
+- **Follow-up retrieval hijacking** — a follow-up naming its own new, fully-specified topic (e.g. a different case study than the previous turn) had its retrieval skewed entirely toward the *previous* topic by the prior-turn-prepend logic. Fixed by also searching on the bare current-turn question and merging in any chunks the prefixed search missed.
+- **MMR dropping the best match** — MMR's diversity trade-off was found to exclude the single most relevant chunk in favor of a less relevant "diverse" one, at multiple `lambda_mult` values tested. Fixed by merging in plain top-k similarity results as a floor under MMR's own picks.
+- **Bibliography noise** — three of the four source PDFs devote up to ~20% of their pages to citation lists that share surface vocabulary with real questions without containing any real answer, and MMR was repeatedly choosing them over genuinely relevant content. Fixed by excluding each document's References/Bibliography section at ingestion (`truncate_at_references` in `build_vector_store.py`) — chunk count dropped from 758 to 641.
+- **Article-number queries** — "What is Article 10?" embeds too poorly with `all-MiniLM-L6-v2` to retrieve by similarity alone (confirmed: zero of the top-30 similarity results contained the literal text). Fixed with a deterministic keyword lookup (`article_keyword_lookup`, Chroma `where_document={"$contains": ...}`) for exact "Article N" citations, merged into the MMR context.
+- **Typo sensitivity** — a typo ("Autonomus Vechicle") degraded retrieval scores from ~0.96 to ~1.5 and made the correct chunk disappear from the results entirely. Fixed with one extra, tightly-scoped Groq call (temperature 0) that corrects unambiguous spelling errors before embedding, without touching what `generate` sees or what the user is shown.
+
+Full before/after data, alternatives considered, and why each fix was scoped the way it was: [DECISIONS.md](DECISIONS.md#hallucination-defenses).
 
 Every retrieval score and verification verdict is logged via Python's `logging` module, and the Streamlit UI tracks a per-session count of verified/revised queries plus a low-confidence tally — turning "we think hallucinations are rare" into a measured rate.
 
@@ -73,6 +87,7 @@ PDF Files → Text Extraction → Cleaning → Chunking → Embedding → Vector
 **Components:**
 - **PyPDFLoader**: Extracts text from PDF documents
 - **Text Cleaner**: Normalizes whitespace and fixes hyphenation
+- **Reference Truncation** (`truncate_at_references`): Cuts each document at its first References/Bibliography heading before chunking (see [Hallucination Defenses](#hallucination-defenses))
 - **Text Splitter**: Divides text into chunks (1400 chars, 150 overlap)
 - **Sentence Transformers**: Converts text to vector embeddings
 - **ChromaDB**: Stores and indexes vectors for similarity search
@@ -81,15 +96,19 @@ PDF Files → Text Extraction → Cleaning → Chunking → Embedding → Vector
 
 ### 2. Retrieval System
 
-**Purpose:** Find relevant document chunks based on user queries, and produce a confidence signal used to decide whether to answer at all
+**Purpose:** Find relevant document chunks based on user queries, and produce a confidence signal for observability (logged/displayed, not used to gate generation — see [Hallucination Defenses](#hallucination-defenses))
 
 **Flow:**
 ```
-User Query → Embed Query → [MMR Search → Top-K Chunks] + [Top-1 Similarity Score] → Context Assembly
+User Query → Normalize spelling (Groq) → Embed Query →
+  [MMR Search] + [Plain top-k Search] + [Bare-question Search] + [Article-citation keyword lookup]
+  → Dedup & merge → Context Assembly
 ```
 
 **Components:**
 - **LocalEmbeddings**: Wraps Sentence Transformers for LangChain compatibility
+- **Query normalization**: One Groq call (temperature 0) fixes obvious spelling errors before embedding
+- **article_keyword_lookup**: Deterministic Chroma `where_document` substring match for exact "Article N" citations
 - **ChromaDB MMR search**: Retrieves TOP_K=4 chunks balancing relevance and diversity (`fetch_k=20`, `lambda_mult=0.5`)
 - **Confidence score**: A separate plain similarity search (`k=1`) logged and displayed for observability — MMR's re-ranked distances aren't a clean relevance signal on their own, and testing showed this score can't reliably gate generation (see [Hallucination Defenses](#hallucination-defenses))
 - **Context Builder**: Assembles retrieved chunks with source attribution, and tracks which source names were actually retrieved (used by the citation check)
@@ -248,9 +267,11 @@ COLLECTION_NAME = "ai_ethics_eu"
 ### LLM Configuration
 
 ```python
-LLM_MODEL = "llama-3.1-8b-instant"
-TEMPERATURE = 0.2                       # Low creativity for factual accuracy
-LOW_CONFIDENCE_LOG_THRESHOLD = 1.0      # Chroma L2 distance; informational label only, doesn't gate generation
+LLM_MODEL = "llama-3.1-8b-instant"          # generate, revise, and query normalization
+VERIFY_MODEL = "llama-3.3-70b-versatile"    # verify only — a stronger, independent judge
+TEMPERATURE = 0.2                           # Low creativity for factual accuracy (0 for query normalization)
+LOW_CONFIDENCE_LOG_THRESHOLD = 1.0          # Chroma L2 distance; informational label only, doesn't gate generation
+ARTICLE_RE = r"\bArticle\s+(\d+)\b"         # triggers the deterministic article-citation keyword lookup
 ```
 
 ### File Structure
@@ -284,18 +305,18 @@ ai-ethics-assistant/
 
 ### Vector Store Creation
 
-- **Input**: 253 pages across 4 PDF documents
-- **Output**: 758 chunks
+- **Input**: 253 pages across 4 PDF documents (References/Bibliography sections excluded before chunking)
+- **Output**: 641 chunks
 - **Processing Time**: ~13 seconds
 - **Memory Usage**: ~500MB (embeddings model)
 - **Storage Size**: ~100MB (ChromaDB)
 
 ### Query Processing
 
-- **Retrieval Time**: <100ms (ChromaDB similarity search)
-- **Embedding Time**: <50ms (single query embedding)
-- **Generation Time**: <2 seconds (Groq LLM)
-- **Total Response Time**: <3 seconds
+- **Retrieval Time**: <200ms (four ChromaDB searches — MMR, plain top-k, bare-question, keyword lookup — plus dedup)
+- **Embedding Time**: <50ms per query embedded
+- **Groq Calls per Query**: 3 typically (normalize, generate, verify), 4 if `revise` runs
+- **Total Response Time**: ~2–4 seconds typical; longer if Groq rate-limits and the client retries
 
 ### Resource Usage
 

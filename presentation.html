@@ -501,15 +501,15 @@
     <div class="pipeline">
       <div class="stage">
         <h3>Retrieve</h3>
-        <p>MMR search across 758 chunks — diverse context, not near-duplicates.</p>
+        <p>MMR + similarity + keyword fallbacks across 641 chunks — diverse context, not near-duplicates.</p>
       </div>
       <div class="stage">
         <h3>Generate</h3>
-        <p>Groq drafts an answer strictly from retrieved context.</p>
+        <p>Groq (8B, fast) drafts an answer strictly from retrieved context.</p>
       </div>
       <div class="stage accent">
         <h3>Verify</h3>
-        <p>An independent second call checks citation, faithfulness &amp; relevance.</p>
+        <p>An independent, stronger Groq model (70B) checks citation, faithfulness &amp; relevance.</p>
       </div>
       <div class="stage">
         <h3>Revise</h3>
@@ -531,7 +531,8 @@
         <table class="doc-table">
           <thead><tr><th>Layer</th><th>Choice</th></tr></thead>
           <tbody>
-            <tr><td>LLM</td><td>Groq — llama-3.1-8b-instant</td></tr>
+            <tr><td>LLM (generation)</td><td>Groq — llama-3.1-8b-instant</td></tr>
+            <tr><td>LLM (verification)</td><td>Groq — llama-3.3-70b-versatile</td></tr>
             <tr><td>Embeddings</td><td>Sentence Transformers (local)</td></tr>
             <tr><td>Vector store</td><td>ChromaDB</td></tr>
             <tr><td>Agent framework</td><td>LangGraph</td></tr>
@@ -543,7 +544,7 @@
         <span class="tag">Amendment — on the record</span>
         <p>
           The brief specified Google Gemini. Gemini's free tier caps
-          embeddings at 1,000/day and 100/minute — for 758 chunks, that
+          embeddings at 1,000/day and 100/minute — for 641 chunks, that
           quota blocked development repeatedly.
         </p>
         <p>
@@ -613,11 +614,11 @@
     <div class="grid-2">
       <div style="display:flex; gap: 1rem; flex-wrap: wrap;">
         <div class="stat-block" style="flex: 1 1 120px;">
-          <div class="stat-num">37</div>
+          <div class="stat-num">43</div>
           <div class="stat-label">Logged design decisions</div>
         </div>
         <div class="stat-block" style="flex: 1 1 120px;">
-          <div class="stat-num">758</div>
+          <div class="stat-num">641</div>
           <div class="stat-label">Indexed chunks, zero duplicates</div>
         </div>
         <div class="stat-block" style="flex: 1 1 120px;">

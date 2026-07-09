@@ -7,11 +7,13 @@ Uses Groq for LLM and local Sentence Transformers for embeddings.
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Literal, Optional, TypedDict
 
 import streamlit as st
 from dotenv import load_dotenv
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langchain_chroma import Chroma
@@ -31,10 +33,22 @@ load_dotenv(ROOT_DIR / ".env")
 CHROMA_DIR = str(ROOT_DIR / "chroma_db")
 COLLECTION_NAME = "ai_ethics_eu"
 LLM_MODEL = "llama-3.1-8b-instant"
+# The verify node is a judge task, not a generation task: testing found the 8B model
+# used for generation hallucinates faithfulness failures on its own correctly-grounded
+# paraphrases (e.g. flagged "bias in data collection and training" as an invented claim
+# when that exact phrase was in the context). A larger model as the sole judge fixed it.
+VERIFY_MODEL = "llama-3.3-70b-versatile"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 TOP_K = 4
 FETCH_K = 20            # candidates considered by MMR before diversity re-ranking
 MMR_LAMBDA = 0.5        # 0 = max diversity, 1 = pure relevance
+
+# Bare "Article N" queries embed poorly against a knowledge base document that only
+# mentions articles in passing one-liners rather than as their own dedicated sections —
+# none of the top-30 similarity results contain the literal text for some article
+# numbers. A deterministic keyword lookup catches exact article citations that
+# embedding similarity alone misses.
+ARTICLE_RE = re.compile(r"\barticle\s+(\d+)\b", re.IGNORECASE)
 
 # Chroma's default distance is squared L2 (lower = more similar). A hard
 # pre-generation abstain gate on this score was tried and removed: typo'd or
@@ -88,6 +102,14 @@ have enough information to answer). Otherwise reply with "INVALID: " followed by
 explanation, noting whether it's a faithfulness or relevance failure.
 """
 
+NORMALIZE_QUERY_PROMPT = """Fix any spelling or typing errors in the QUESTION below. Do not \
+change its meaning, do not answer it, and do not add information. If there are no errors, \
+repeat it exactly as-is.
+
+QUESTION: {question}
+
+Reply with ONLY the corrected question, nothing else."""
+
 REVISE_PROMPT = """Your previous draft failed a review: {reason}
 
 Rewrite the answer to the question below using ONLY the context provided, correcting this \
@@ -111,6 +133,22 @@ SOURCE_CITATION_KEYWORDS = {
         "Trustworthy AI Guidelines",
     ],
 }
+
+
+def article_keyword_lookup(question: str, vectorstore: Chroma) -> list[Document]:
+    """Deterministic substring fallback for exact 'Article N' citations, which short
+    embedding queries often fail to retrieve by similarity alone (see ARTICLE_RE)."""
+    match = ARTICLE_RE.search(question)
+    if not match:
+        return []
+    result = vectorstore._collection.get(
+        where_document={"$contains": f"Article {match.group(1)}:"},
+        limit=4,
+    )
+    return [
+        Document(page_content=content, metadata=meta)
+        for content, meta in zip(result["documents"], result["metadatas"])
+    ]
 
 
 def check_citations(draft: str, retrieved_sources: list[str]) -> Optional[str]:
@@ -165,8 +203,10 @@ def load_agent():
         persist_directory=CHROMA_DIR,
     )
 
-    # Initialize LLM
+    # Initialize LLMs: a fast model for generation, a stronger one to judge it (see
+    # VERIFY_MODEL comment above for why these are split).
     llm = ChatGroq(model=LLM_MODEL, temperature=0.2)
+    verifier_llm = ChatGroq(model=VERIFY_MODEL, temperature=0.2)
 
     # Define agent nodes
     def retrieve(state: AgentState) -> dict:
@@ -175,15 +215,26 @@ def load_agent():
         relevance signal — a separate top-1 lookup gives us that)."""
         question = state["messages"][-1].content
 
+        # all-MiniLM-L6-v2 is fragile on typo'd short queries — "Autonomus Vechicle"
+        # scored 1.37-1.55 against the collection (no relevant chunk in the top 6),
+        # while the corrected spelling scored 0.96-1.06 with the right chunk at rank
+        # 2 (confirmed by direct testing). One cheap Groq call fixes obvious spelling
+        # errors before embedding; generate() still sees the user's raw question via
+        # the full message history, so this only affects retrieval, not what's shown.
+        normalize_check = llm.invoke(
+            [HumanMessage(content=NORMALIZE_QUERY_PROMPT.format(question=question))]
+        )
+        normalized_question = normalize_check.content.strip() or question
+
         # A bare follow-up like "give an example of it" has no semantic content on its
         # own and always scores poorly, which would wrongly trigger abstention on every
         # pronoun-referencing follow-up. Prepend the prior assistant answer (if any) to
         # give retrieval enough context to resolve it — generate() still sees the raw
         # question via the full message history, so this only affects retrieval.
-        retrieval_query = question
+        retrieval_query = normalized_question
         for msg in reversed(state["messages"][:-1]):
             if isinstance(msg, AIMessage):
-                retrieval_query = f"{msg.content}\n\n{question}"
+                retrieval_query = f"{msg.content}\n\n{normalized_question}"
                 break
 
         top_hit = vectorstore.similarity_search_with_score(retrieval_query, k=1)
@@ -192,6 +243,44 @@ def load_agent():
         docs = vectorstore.max_marginal_relevance_search(
             retrieval_query, k=TOP_K, fetch_k=FETCH_K, lambda_mult=MMR_LAMBDA
         )
+
+        # A follow-up that names its own fully-specified new topic (e.g. "give me
+        # details about the case study on Warfare and weaponisation" right after an
+        # answer about a different case study) gets its retrieval hijacked if the
+        # prior turn is prepended: the combined embedding skews toward the previous
+        # topic and the new topic's own chunks can be pushed out of MMR's top-k
+        # entirely (confirmed by testing — a bare search for that question surfaced
+        # the correct chunks, but the prior-turn-prepended search returned zero of
+        # them). Also searching on the bare current-turn question and merging in any
+        # chunks it finds that the prefixed search missed fixes this without
+        # regressing genuine pronoun-style follow-ups: their own bare-question
+        # retrieval just contributes little of value alongside the prefixed one.
+        seen = {d.page_content for d in docs}
+
+        if retrieval_query != normalized_question:
+            for d in vectorstore.max_marginal_relevance_search(
+                normalized_question, k=TOP_K, fetch_k=FETCH_K, lambda_mult=MMR_LAMBDA
+            ):
+                if d.page_content not in seen:
+                    docs.append(d)
+                    seen.add(d.page_content)
+
+        # MMR's diversity trade-off can drop the single most relevant chunk in favor
+        # of a more "diverse" one that's actually less useful (confirmed: for one
+        # query the true best match ranked #4 by plain similarity was excluded by
+        # every MMR parameter combination tried, always swapped for a worse chunk).
+        # Plain top-k similarity is a floor under MMR: it guarantees the best raw
+        # matches are always present, while MMR's own picks still add extra breadth.
+        for doc, _score in vectorstore.similarity_search_with_score(normalized_question, k=TOP_K):
+            if doc.page_content not in seen:
+                docs.append(doc)
+                seen.add(doc.page_content)
+
+        for kw_doc in article_keyword_lookup(normalized_question, vectorstore):
+            if kw_doc.page_content not in seen:
+                docs.append(kw_doc)
+                seen.add(kw_doc.page_content)
+
         context = "\n\n---\n\n".join(
             f"[Source: {d.metadata['source_name']}]\n{d.page_content}" for d in docs
         )
@@ -215,7 +304,7 @@ def load_agent():
 
         question = state["messages"][-1].content
         check = VERIFY_PROMPT.format(question=question, context=state["context"], draft=state["draft"])
-        result = llm.invoke([HumanMessage(content=check)])
+        result = verifier_llm.invoke([HumanMessage(content=check)])
         verdict = result.content.strip()
         logger.info("verify: %s", verdict)
         return {"verification": verdict}
@@ -542,9 +631,10 @@ def main():
         st.divider()
         with st.expander("ℹ️ About this assistant"):
             st.markdown(
-                "- **LLM:** Groq (`llama-3.1-8b-instant`)\n"
+                "- **LLM (generation):** Groq (`llama-3.1-8b-instant`)\n"
+                "- **LLM (verification):** Groq (`llama-3.3-70b-versatile`)\n"
                 "- **Embeddings:** local Sentence Transformers\n"
-                "- **Vector store:** ChromaDB (758 chunks)\n"
+                "- **Vector store:** ChromaDB (641 chunks)\n"
                 "- **Agent:** LangGraph — retrieve → generate → verify → revise\n"
                 "- **Sources:** EU AI Act, Bias & Fairness Survey (Mehrabi et al.), "
                 "EP Ethics of AI study, EU Trustworthy AI Guidelines"
